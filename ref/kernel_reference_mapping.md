@@ -1,0 +1,496 @@
+# Kernel Reference Mapping
+
+本文件是 `reference/<kernel>/` 与未来 `src/*.c` 文件头之间的中文审计索引。
+它不描述完整上游项目移植，而是说明每个 C benchmark 从哪些开源项目抽取小核
+语义、哪些行为由 benchmark 自己定义、以及 code agent 写 C 时必须遵守的函数
+和数据边界。
+
+硬件场景：当前 CGRA 芯片不运行完整 RAG 系统，也不构建真实知识库。加速器是
+CPU 的协助单元，本阶段先选取开源项目中可追溯的小场景，把 CPU 侧常见的循环、
+复杂分支、跳转、访存和评分路径重写成确定性 C benchmark。后续 CPU 协同测试
+可以在这些小核基础上扩展更完整的测例。
+
+通用约束：
+
+- C 文件必须匹配本文件和 `reference/<kernel>/source_excerpt.md` 中定义的小核行为。
+- 不得声称逐行移植 Haystack、FAISS、rank_bm25、Pyserini、NetworkX、sumy 或 LexRank。
+- 数据结构只服务于过程式算法阶段，不模拟 `Retriever`、`DocumentStore`、`Pipeline`
+  或图 API 对象。
+- 每个 kernel 的输出必须包含能证明关键路径执行过的 IDs/scores/counters/checksum。
+
+## haystack_enns_flat.c
+
+Kernel: `haystack_enns_flat.c`
+
+参考归档：
+- `reference/haystack_enns_flat/source_excerpt.md`
+- `reference/haystack_enns_flat/analysis.md`
+- `reference/haystack_enns_flat/analysis_zh.md`
+
+参考来源明细：
+- Repo: `deepset-ai/haystack`
+  - File: `haystack/components/retrievers/in_memory/embedding_retriever.py`
+  - Function / method: `InMemoryEmbeddingRetriever.run()`
+  - URL: `https://github.com/deepset-ai/haystack/blob/main/haystack/components/retrievers/in_memory/embedding_retriever.py`
+  - 提供语义：query embedding、runtime/configured `top_k`、retriever flow。
+- Repo: `deepset-ai/haystack`
+  - File: `haystack/document_stores/in_memory/document_store.py`
+  - Function / method: embedding retrieval path
+  - URL: `https://github.com/deepset-ai/haystack/blob/main/haystack/document_stores/in_memory/document_store.py`
+  - 提供语义：in-memory document embedding scoring 和 Top-K retrieval flow。
+- Repo: `facebookresearch/faiss`
+  - File: `faiss/IndexFlat.cpp`
+  - Function / method: `IndexFlat::search()`, `IndexFlatL2`
+  - URL: `https://github.com/facebookresearch/faiss/blob/main/faiss/IndexFlat.cpp`
+  - 提供语义：exhaustive L2 search、distances、labels。
+- Repo: `facebookresearch/faiss`
+  - File: `faiss/utils/Heap.h`
+  - Function / method: heap utilities
+  - URL: `https://github.com/facebookresearch/faiss/blob/main/faiss/utils/Heap.h`
+  - 提供语义：Top-K 背景；C benchmark 不移植 heap 实现。
+
+来源边界：
+- Haystack `InMemoryEmbeddingRetriever.run()` 和 in-memory document store 只提供
+  query embedding、`top_k`、in-memory retrieval flow。
+- FAISS `IndexFlatL2` 提供 exhaustive L2 search、distances、labels 的核心语义。
+- FAISS heap utilities 只作为 Top-K 背景，不在 C 中移植。
+- Benchmark 定义 deterministic int16 vectors、insertion Top-K 和 checksum。
+
+C 行为：
+- 遍历所有 documents。
+- 对每个 document 计算 squared L2 distance。
+- 用 deterministic insertion 维护最小距离 Top-K。
+- 距离相同用更小 `doc_id` tie-break。
+
+允许的主要数据结构：
+- `EnnsFlatInput`
+- `EnnsFlatResult`
+- `EnnsFlatCounters`
+
+不得新增：
+- `State`
+- fake index object
+- Haystack/FAISS class-like wrapper
+
+C 函数契约：
+- 初始化 synthetic vectors -> `init_data`
+- 初始化 Top-K invalid slots -> `reset_result`
+- 主 document loop -> `run_kernel`
+- squared L2 -> `l2_distance`
+- Top-K 插入 -> `update_topk_min_distance`
+- 输出稳定校验 -> `checksum_result`, `print_result`
+
+验证要求：
+- `DOCS_SCANNED == NUM_DOCS`
+- Top-K IDs 有效且非全 invalid。
+- Top-K scores 按 L2 distance 升序。
+- checksum 覆盖 IDs、scores、`DOCS_SCANNED`。
+
+## haystack_enns_filtered.c
+
+Kernel: `haystack_enns_filtered.c`
+
+参考归档：
+- `reference/haystack_enns_filtered/source_excerpt.md`
+- `reference/haystack_enns_filtered/analysis.md`
+- `reference/haystack_enns_filtered/analysis_zh.md`
+
+参考来源明细：
+- Repo: `deepset-ai/haystack`
+  - File: `haystack/components/retrievers/in_memory/embedding_retriever.py`
+  - Function / method: `InMemoryEmbeddingRetriever.run()`
+  - URL: `https://github.com/deepset-ai/haystack/blob/main/haystack/components/retrievers/in_memory/embedding_retriever.py`
+  - 提供语义：query embedding、filters、`top_k` 传入 retrieval flow。
+- Repo: `deepset-ai/haystack`
+  - File: `haystack/document_stores/in_memory/document_store.py`
+  - Function / method: filtering and embedding retrieval path
+  - URL: `https://github.com/deepset-ai/haystack/blob/main/haystack/document_stores/in_memory/document_store.py`
+  - 提供语义：retrieval 前 metadata filtering。
+- Repo: `facebookresearch/faiss`
+  - File: `faiss/IndexFlat.cpp`
+  - Function / method: `IndexFlat::search()`, `IndexFlatL2`
+  - URL: `https://github.com/facebookresearch/faiss/blob/main/faiss/IndexFlat.cpp`
+  - 提供语义：exhaustive squared L2 search。
+
+来源边界：
+- Haystack 提供 filters 传入 retriever 并在 retrieval 前过滤 documents 的行为边界。
+- FAISS `IndexFlatL2` 提供 exhaustive squared L2 search 语义。
+- Benchmark 定义固定 metadata predicate、deterministic metadata、early abandon。
+- Early abandon 不是 Haystack/FAISS 等价行为，只用于近似 CGRA 测试中的复杂分支和
+  partial accumulation。
+
+C 行为：
+- 先执行 `passes_filter(meta[d])`。
+- 被 filter 拒绝的 document 不进入距离计算。
+- Top-K 未填满前必须完整计算 L2。
+- 只有 `topk[TOP_K - 1].doc_id >= 0` 后，才允许使用 boundary score 做 cutoff。
+- partial distance 超过有效 boundary 时可 abandon。
+
+允许的主要数据结构：
+- `DocMeta`
+- `EnnsFilteredInput`
+- `EnnsFilteredResult`
+- `EnnsFilteredCounters`
+
+不得新增：
+- filter AST
+- filter object hierarchy
+- FAISS-like index wrapper
+
+C 函数契约：
+- 初始化 vectors 和 metadata -> `init_data`
+- 初始化 Top-K/counters -> `reset_result`
+- metadata predicate -> `passes_filter`
+- boundary 有效性 -> `topk_boundary_is_valid`
+- 完整 L2 -> `l2_distance`
+- cutoff L2 -> `l2_distance_until_cutoff`
+- 主流程编排 -> `run_kernel`
+- 输出稳定校验 -> `checksum_result`, `print_result`
+
+验证要求：
+- `FILTERED_OUT > 0`
+- `DISTANCE_FULL > 0`
+- `DISTANCE_ABANDONED > 0`
+- Top-K IDs 有效。
+- early abandon 不得在 Top-K boundary 无效时发生。
+
+## haystack_bm25.c
+
+Kernel: `haystack_bm25.c`
+
+参考归档：
+- `reference/haystack_bm25/source_excerpt.md`
+- `reference/haystack_bm25/analysis.md`
+- `reference/haystack_bm25/analysis_zh.md`
+
+参考来源明细：
+- Repo: `deepset-ai/haystack`
+  - File: `haystack/components/retrievers/in_memory/bm25_retriever.py`
+  - Function / method: `InMemoryBM25Retriever.run()`
+  - URL: `https://github.com/deepset-ai/haystack/blob/main/haystack/components/retrievers/in_memory/bm25_retriever.py`
+  - 提供语义：query/filter/top_k retriever flow。
+- Repo: `deepset-ai/haystack`
+  - File: `haystack/document_stores/in_memory/document_store.py`
+  - Function / method: BM25 retrieval path
+  - URL: `https://github.com/deepset-ai/haystack/blob/main/haystack/document_stores/in_memory/document_store.py`
+  - 提供语义：in-memory keyword retrieval、filter、Top-K flow。
+- Repo: `dorianbrown/rank_bm25`
+  - File: `rank_bm25.py`
+  - Function / method: `BM25Okapi.get_scores()`
+  - URL: `https://github.com/dorianbrown/rank_bm25/blob/master/rank_bm25.py`
+  - 提供语义：BM25Okapi term scoring target。
+- Repo: `xhluca/bm25s`
+  - File: `bm25s/scoring.py`
+  - Function / method: sparse scoring routines
+  - URL: `https://github.com/xhluca/bm25s/blob/main/bm25s/scoring.py`
+  - 提供语义：posting/sparse scoring layout 背景；不作为 C 行为等价契约。
+
+来源边界：
+- Haystack `InMemoryBM25Retriever.run()` 和 document store 提供 query/filter/top_k
+  retriever flow。
+- `rank_bm25` `BM25Okapi.get_scores()` 提供 BM25Okapi term scoring target。
+- `bm25s` 只提供 posting-list / sparse layout 背景。
+- Benchmark 定义 deterministic query terms、postings、metadata、doc lengths、
+  `idf_q8[]` 和 fixed-point arithmetic。
+
+明确不实现：
+- tokenizer
+- corpus preprocessing
+- `BM25Okapi._calc_idf()`
+- negative-IDF epsilon flooring
+- Haystack BM25L 完整行为
+- bm25s CSR internals
+
+C 行为：
+- `init_index()` 生成 deterministic postings、doc stats、metadata、`idf_q8[]`。
+- `init_query()` 生成 deterministic query term IDs。
+- 对每个 query term 遍历 posting list。
+- empty list 只增加 `EMPTY_TERMS`。
+- filtered posting 不影响 score/active flag。
+- accepted posting 调用唯一 scoring helper `bm25_term_score_q8()`。
+- Q8 scoring 使用 int64 intermediates、toward-zero truncation 和 zero-denominator
+  contribution = 0 的固定契约。
+- 最终只从 active documents 收集 Top-K。
+
+允许的主要数据结构：
+- `Posting`
+- `PostingList`
+- `Bm25Index`
+- `Bm25Query`
+- `Bm25State`
+- `Bm25Counters`
+
+不得新增：
+- tokenizer
+- corpus object
+- document store
+- idf calculator object
+- sparse matrix wrapper
+
+C 函数契约：
+- index/postings/doc stats 初始化 -> `init_index`
+- query terms 初始化 -> `init_query`
+- metadata predicate -> `passes_filter`
+- BM25Okapi Q8 term contribution -> `bm25_term_score_q8`
+- posting traversal -> `score_posting_list_q8`
+- active-doc Top-K -> `collect_active_docs_into_topk`
+- 主流程编排 -> `run_kernel`
+- 输出稳定校验 -> `checksum_result`, `print_result`
+
+验证要求：
+- `ACTIVE_DOCS > 0`
+- `FILTERED_OUT > 0`
+- `EMPTY_TERMS > 0`
+- Top-K IDs 有效。
+- fixed-point 变量名使用 `_q8`。
+- Q8 乘除顺序、舍入和 denominator 为 0 的行为必须匹配 reference。
+- checksum 覆盖 Top-K IDs、scores、active/filter/empty counters。
+
+## haystack_hybrid_merge.c
+
+Kernel: `haystack_hybrid_merge.c`
+
+参考归档：
+- `reference/haystack_hybrid_merge/source_excerpt.md`
+- `reference/haystack_hybrid_merge/analysis.md`
+- `reference/haystack_hybrid_merge/analysis_zh.md`
+
+参考来源明细：
+- Repo: `deepset-ai/haystack`
+  - File: `haystack/components/joiners/document_joiner.py`
+  - Function / method: `DocumentJoiner.run()`, weighted merge mode
+  - URL: `https://github.com/deepset-ai/haystack/blob/main/haystack/components/joiners/document_joiner.py`
+  - 提供语义：join multiple document lists、duplicate handling、weighted merge。
+- Docs: Haystack hybrid retrieval tutorial
+  - File / page: tutorial 33 hybrid retrieval
+  - Function / method: dense+sparse retriever pipeline usage
+  - URL: `https://haystack.deepset.ai/tutorials/33_hybrid_retrieval`
+  - 提供语义：dense/sparse outputs joined before downstream RAG。
+- Repo: `castorini/pyserini`
+  - File: `README.md`
+  - Function / method: hybrid / RRF background references
+  - URL: `https://github.com/castorini/pyserini/blob/master/README.md`
+  - 提供语义：rank fusion 背景；RRF 不作为 v0 C 行为。
+
+来源边界：
+- Haystack `DocumentJoiner` 提供 join、duplicate document handling、weighted
+  score merge 的组件语义。
+- Haystack hybrid retrieval tutorial 提供 dense+sparse retriever output 被 join 的
+  pipeline 背景。
+- Pyserini/RRF 只作为 rank fusion 背景。
+- Benchmark 定义 deterministic dense/sparse candidate lists、metadata filter、
+  fixed-size merged table 和 pure weighted merge。
+
+明确不实现：
+- full Haystack join modes
+- Pyserini search stack
+- RRF scoring
+- duplicate bonus
+- dynamic `Document` object
+
+C 行为：
+- dense list 先 merge，sparse list 后 merge。
+- v0 synthetic input 保证同一来源内部无 duplicate。
+- `DUPLICATES` 统计跨来源重复：sparse candidate 命中已被 dense 接受的 `doc_id`。
+- filtered candidate 不分配 merged slot。
+- final score 是 source score 的 weighted sum，不使用 rank reciprocal。
+- `dense_weight_q8 + sparse_weight_q8 == Q8_ONE`。
+- 缺失 dense 或 sparse 来源时对应 weighted component 为 0。
+- `score_merged_candidates_q8()` 写入 `merged_score_q8`，Top-K 使用该值。
+
+允许的主要数据结构：
+- `Candidate`
+- `HybridInput`
+- `MergedCandidate`
+- `HybridState`
+- `HybridCounters`
+
+不得新增：
+- hash map
+- duplicate manager
+- RRF object
+- scorer object hierarchy
+
+C 函数契约：
+- 初始化 candidates/metadata -> `init_data`
+- 过滤 candidate -> `passes_filter`
+- 线性查找 merged slot -> `find_merged`
+- 插入或复用 slot -> `insert_or_find_merged`
+- 候选列表 ingest -> `merge_candidate_list`
+- score all merged slots -> `score_merged_candidates_q8`
+- weighted Q8 score per slot -> `weighted_merge_score_q8`
+- final Top-K -> `collect_merged_topk`
+- 主流程编排 -> `run_kernel`
+- 输出稳定校验 -> `checksum_result`, `print_result`
+
+验证要求：
+- `DUPLICATES > 0`
+- `FILTERED > 0`
+- `OVERFLOW` 必须输出。
+- Top-K IDs 有效。
+- Top-K 按 `merged_score_q8` 降序，分数相同用更小 `doc_id` tie-break。
+- 文档和输出不得声称实现 RRF。
+
+## haystack_context_pack.c
+
+Kernel: `haystack_context_pack.c`
+
+参考归档：
+- `reference/haystack_context_pack/source_excerpt.md`
+- `reference/haystack_context_pack/analysis.md`
+- `reference/haystack_context_pack/analysis_zh.md`
+
+参考来源明细：
+- Repo: `deepset-ai/haystack`
+  - File: `haystack/components/builders/prompt_builder.py`
+  - Function / method: `PromptBuilder.run()`
+  - URL: `https://github.com/deepset-ai/haystack/blob/main/haystack/components/builders/prompt_builder.py`
+  - 提供语义：documents/query 作为 template variables 被消费。
+- Docs: Haystack PromptBuilder
+  - File / page: PromptBuilder docs
+  - Function / method: retriever -> PromptBuilder pipeline usage
+  - URL: `https://docs.haystack.deepset.ai/docs/promptbuilder`
+  - 提供语义：retrieved documents 进入 generator 前的 pipeline 位置。
+
+来源边界：
+- Haystack `PromptBuilder.run()` 只提供 documents/query 被消费进入 prompt rendering
+  的 pipeline 位置。
+- Benchmark 自己定义 score sort、source/chunk dedup、token budget packing 和
+  truncation policy。
+- 该 kernel 是 PromptBuilder-adjacent context preparation，不是 PromptBuilder 模板引擎。
+
+明确不实现：
+- Jinja template rendering
+- string prompt construction
+- tokenizer-dependent token counting
+- real document text
+- LLM/generator call
+
+C 行为：
+- 对 deterministic candidates 按 score 降序排序。
+- 分数相同用更小 `doc_id` tie-break。
+- 已 packed 的 `(source_id, chunk_id)` 再出现时跳过。
+- full token_len fits 时完整加入。
+- remaining budget 大于等于 `MIN_TRUNC_TOKENS` 时可 truncation。
+- truncated packed doc 使用全部 remaining budget，`truncated = 1`。
+- 否则增加 `SKIPPED_BUDGET`。
+
+允许的主要数据结构：
+- `ContextCandidate`
+- `PackedDoc`
+- `ContextPackInput`
+- `ContextPackResult`
+- `ContextPackCounters`
+
+不得新增：
+- template renderer
+- string buffer state
+- token-budget manager object
+
+C 函数契约：
+- 初始化 candidates -> `init_data`
+- 结果和 counters 初始化 -> `reset_result`
+- score sort -> `sort_candidates_by_score`
+- duplicate predicate -> `is_duplicate_source_chunk`
+- budget 查询 -> `remaining_budget`
+- packed output append -> `append_packed_doc`
+- full/truncated/skip 决策 -> `pack_candidate_with_budget`
+- 主流程编排 -> `run_kernel`
+- 输出稳定校验 -> `checksum_result`, `print_result`
+
+验证要求：
+- packed IDs 有效。
+- `TRUNCATED + SKIPPED_DUPLICATE + SKIPPED_BUDGET > 0`
+- `USED_TOKENS <= TOKEN_BUDGET`
+- `TOKEN_BUDGET > 0` 且 `0 < MIN_TRUNC_TOKENS <= TOKEN_BUDGET`。
+- truncated entry 的 `used_tokens` 等于 append 前的 remaining budget。
+- duplicate 检查基于 `(source_id, chunk_id)`，不是 `doc_id`。
+- checksum 覆盖 packed IDs、used tokens、counters。
+
+## haystack_lexrank.c
+
+Kernel: `haystack_lexrank.c`
+
+参考归档：
+- `reference/haystack_lexrank/source_excerpt.md`
+- `reference/haystack_lexrank/analysis.md`
+- `reference/haystack_lexrank/analysis_zh.md`
+
+参考来源明细：
+- Repo: `crabcamp/lexrank`
+  - File: `README.rst`
+  - Function / method: similarity-matrix centrality and ranking examples
+  - URL: `https://github.com/crabcamp/lexrank/blob/dev/README.rst`
+  - 提供语义：LexRank algorithm overview 和 centrality/ranking behavior 背景。
+- Repo: `miso-belica/sumy`
+  - File: `sumy/summarizers/lex_rank.py`
+  - Function / method: LexRank summarizer
+  - URL: `https://github.com/miso-belica/sumy/blob/main/sumy/summarizers/lex_rank.py`
+  - 提供语义：similarity matrix、threshold graph、power-method ranking、selection。
+- Docs: NetworkX PageRank
+  - File / page: `pagerank_alg.pagerank` docs
+  - Function / method: `pagerank()`
+  - URL: `https://networkx.org/documentation/stable/reference/algorithms/generated/networkx.algorithms.link_analysis.pagerank_alg.pagerank.html`
+  - 提供语义：damping、incoming rank propagation、iterative update、dangling 背景。
+
+来源边界：
+- `crabcamp/lexrank` 和 `sumy` 提供 sentence similarity graph、centrality、selection
+  语义。
+- NetworkX PageRank 提供 damping、incoming rank propagation、iterative update
+  背景。
+- Benchmark 定义 deterministic sentence-term matrix、Q8 similarity/rank、fixed
+  iteration、dangling redistribution 和 redundancy filter。
+
+明确不实现：
+- tokenizer
+- stop-word processing
+- strict cosine，除非 C 代码真的实现 strict cosine
+- NetworkX graph API
+- convergence tolerance
+- full text summarization pipeline
+
+C 行为：
+- 计算 sentence similarity matrix。
+- 构建 threshold graph；必须说明 `EDGES` 是 undirected pairs 还是 directed stored
+  adjacency entries。
+- 初始化 rank 为 `1 / N`。
+- fixed iteration 执行 PageRank-style update。
+- `out_degree == 0` 时按 dangling redistribution policy 处理：
+  `dangling_sum / N` 加到每个 destination 的 incoming。
+- Q8 rank propagation 使用 `rank_old_q8`、`rank_new_q8`、`damping_q8`、`base_q8`，
+  truncation toward zero，fixed iterations 后不 renormalize。
+- Graph construction 使用 `sim_q8 >= SIM_THRESHOLD_Q8`。
+- 按 rank 选择 summary sentences，并在插入前做 redundancy check。
+
+允许的主要数据结构：
+- `SentenceCorpus`
+- `LexRankState`
+- `LexRankResult`
+- `LexRankCounters`
+
+不得新增：
+- graph API wrapper
+- matrix wrapper object
+- ranker object
+- tokenizer/corpus pipeline object
+
+C 函数契约：
+- 初始化 sentence-term matrix -> `init_corpus`
+- 初始化 graph/rank/result/counters -> `reset_state`
+- similarity -> `sentence_sim_q8`
+- similarity matrix -> `compute_similarity_matrix`
+- threshold graph -> `build_threshold_graph`
+- fixed PageRank-style iterations -> `run_rank_iterations`
+- redundancy predicate -> `sentence_is_redundant`
+- summary selection -> `select_summary_sentences`
+- 主流程编排 -> `run_kernel`
+- 输出稳定校验 -> `checksum_result`, `print_result`
+
+验证要求：
+- `EDGES > 0`
+- `ITERATIONS == FIXED_ITERATIONS`
+- selected sentence IDs 有效。
+- dangling policy 在代码中可见，且不得除以 0。
+- rank initialization、damping、base term、Q8 truncation policy 可见。
+- checksum 覆盖 selected IDs、rank-derived scores 或 selected order、edges、iterations、
+  redundancy counter。
