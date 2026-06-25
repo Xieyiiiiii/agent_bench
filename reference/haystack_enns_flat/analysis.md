@@ -60,3 +60,25 @@ data. `Input`, `Result`, and `Counters` are enough.
   tie-breaks.
 - The C output must expose IDs, distances, and checksum so the exhaustive scan
   behavior can be regression-tested.
+
+## CGRA single-function boundary
+
+The CGRA version maps to `enns_flat_core.c` and keeps only exhaustive L2 scan
+and Top-K update. Host functions such as `init_data`, `reset_result`,
+`l2_distance`, `update_topk_min_distance`, `checksum_result`, and
+`print_result` do not exist as calls in the CGRA file; their behavior is
+expanded inline inside one function:
+
+```text
+enns_flat_core
+  initialize topk ids / distances
+  for each document
+    accumulate squared L2 over dimensions
+    inline Top-K insertion and doc_id tie-break
+  write ids, distances, docs_scanned to out[]
+```
+
+Input vectors are prepared by the host harness. The output buffer must expose
+Top-K IDs, Top-K distances, and `docs_scanned`. This slice is a dense-scan
+baseline with low branch complexity; it covers nested loops and Top-K insertion
+branches, not a control-flow-heavy workload.

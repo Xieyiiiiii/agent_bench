@@ -12,7 +12,7 @@ KERNELS := \
 
 BINS := $(addprefix build/,$(KERNELS))
 
-.PHONY: all clean test
+.PHONY: all clean test cgra-check cgra-clean
 
 all: $(BINS)
 
@@ -25,6 +25,14 @@ build/%: src/%.c include/bench_config.h include/bench_common.h include/topk.h in
 test: all
 	bash tests/run_all.sh
 	bash tests/check_outputs.sh
+
+cgra-check:
+	bash tests/check_cgra_shape.sh
+	bash tests/check_cgra_behavior.sh
+	bash scripts/count_instructions.sh
+
+cgra-clean:
+	rm -rf build/cgra
 
 clean:
 	rm -rf build

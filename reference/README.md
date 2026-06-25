@@ -43,6 +43,10 @@ benchmark 对应哪些 reference、哪些语义来自上游、哪些行为是 be
 - C code 必须匹配这里定义的小核行为，不匹配完整上游应用行为；
 - 如果某个近似行为是为了 CGRA 测试加入的，它必须出现在 reference、C 文件头、
   counter 或输出字段中。
+- host reference 可以使用 helper 函数链解释完整流程；CGRA 版本必须把对应 helper
+  行为内联为单函数阶段块。
+- 如果 CGRA 指令预算要求摘取算法片段，reference analysis 必须写明 `CGRA slice
+  boundary`，不能让使用者误以为 CGRA 文件实现了完整 host pipeline。
 
 推荐的 C 形态是简单过程式调用链：
 
@@ -57,3 +61,6 @@ main
 ```
 
 避免把 benchmark 写成小框架，也避免为每个数组或标量拆出单字段结构体。
+
+CGRA 单函数版本额外遵循 `cgra_flatten_rewrite_plan.md`：单文件单函数、无 helper
+call、无 `main`、无 print、输出 buffer 回写，并通过反汇编审查指令数和 call-like 指令。

@@ -70,3 +70,36 @@ main
 - 只有至少一个 accepted posting 对文档贡献分数后，该文档才变为 active。
 - 最终 Top-K 必须从 active documents 收集，而不是遍历所有文档直接比较。
 - 表示 BM25 fixed-point arithmetic 的变量必须使用 `_q8` 后缀。
+
+## CGRA 单函数实现边界
+
+CGRA 版本优先对应 `bm25_score_core.c`，只保留 posting-list traversal、filter branch、
+Q8 term scoring、score accumulation 和 active flag update。host 版本中的
+`init_index`、`init_query`、`score_posting_list_q8`、`passes_filter`、
+`bm25_term_score_q8`、`collect_active_docs_into_topk` 等函数调用都必须内联或拆到单独
+CGRA 文件中；第一阶段不强制把 Top-K collection 放入同一个函数。
+
+```text
+bm25_score_core
+  遍历 query terms
+    读取 posting-list start/len
+    empty list 增加 empty_terms
+    遍历 postings
+      metadata filter 失败则增加 filtered_out
+      accepted posting 执行 Q8 score contribution
+      累加 score_q8[doc] 并设置 active[doc]
+  统计 accepted_postings 和 active_docs_after_scoring
+  写回 branch counters
+```
+
+host reference 的 BM25 Q8 契约保留 `int64 intermediates`，用于说明数学语义和避免
+host 侧溢出。但 CGRA slice 受“无隐式函数调用”约束，不能盲目使用会被后端降成 runtime
+helper call 的 64-bit multiply/divide。CGRA 实现应优先通过受控输入范围保持 32-bit
+运算安全；如果 CGRA 工具链反汇编显示除法或宽乘法产生 call-like 指令，则必须进一步
+摘取 scoring slice、调整常量范围，或拆分文件，并在 mapping 中说明该 CGRA slice 与
+host Q8 契约的差异。
+
+输出 buffer 必须使用确定语义：`accepted_postings`、`filtered_out`、`empty_terms`、
+`active_docs_after_scoring`。不得使用 estimate 或 touched-doc 这类模糊 counter。该
+slice 是 control-flow-heavy kernel，复杂分支来自 query term loop、empty list、posting
+filter、accepted accumulation 和 active flag。

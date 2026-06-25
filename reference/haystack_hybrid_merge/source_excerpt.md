@@ -62,7 +62,7 @@ updated before changing the C behavior.
 
 ## Weighted score contract
 
-Hybrid merge uses Q8 weights and int64 intermediates:
+Host reference hybrid merge uses Q8 weights and int64 intermediates:
 
 ```text
 Q8_ONE = 256
@@ -78,6 +78,12 @@ Division truncates toward zero. Missing source scores contribute zero. The
 `score_merged_candidates_q8()` stage writes `merged_score_q8` for every merged
 slot, and `collect_merged_topk()` ranks by `merged_score_q8` descending with
 smaller `doc_id` as the deterministic tie-break.
+
+CGRA single-function slices must preserve weighted-merge semantics, missing
+source = 0 behavior, and deterministic tie-breaks. They may use bounded 32-bit
+arithmetic if required to avoid backend runtime helper calls, but any such
+narrowing must be documented in the CGRA slice boundary and verified by
+disassembly.
 
 ## C function mapping contract
 

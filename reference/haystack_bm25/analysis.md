@@ -74,3 +74,40 @@ Avoid additional wrapper structures for postings, scores, or active flags.
   to its score.
 - Final Top-K must be collected from active documents, not from every document.
 - Fixed-point variables that represent BM25 arithmetic must use `_q8` suffixes.
+
+## CGRA single-function boundary
+
+The first CGRA slice maps to `bm25_score_core.c` and keeps posting-list
+traversal, filter branches, Q8 term scoring, score accumulation, and active flag
+updates. Host calls such as `init_index`, `init_query`, `score_posting_list_q8`,
+`passes_filter`, `bm25_term_score_q8`, and `collect_active_docs_into_topk` are
+either expanded inline or split into separate single-function files; Top-K
+collection is not required in the first scoring slice.
+
+```text
+bm25_score_core
+  for each query term
+    read posting-list start/len
+    increment empty_terms for empty lists
+    for each posting
+      apply metadata filter
+      compute accepted Q8 contribution
+      accumulate score_q8[doc] and set active[doc]
+  count accepted_postings and active_docs_after_scoring
+  write branch counters
+```
+
+The host reference keeps the BM25 Q8 contract with `int64` intermediates to
+define the mathematical behavior. The CGRA slice is constrained by the no-call
+frontend, so it must not blindly use operations that the backend lowers to
+runtime helper calls. Prefer controlled input ranges and 32-bit arithmetic. If
+CGRA disassembly shows call-like instructions for division or wide multiply,
+the scoring slice must be further reduced, constants must be narrowed, or the
+file must be split; the mapping must then document the difference from the host
+Q8 contract.
+
+The output buffer must use deterministic counters: `accepted_postings`,
+`filtered_out`, `empty_terms`, and `active_docs_after_scoring`. Do not use
+estimate or touched-doc counters. This slice is control-flow-heavy because of
+the query term loop, empty-list branch, posting filter, accepted accumulation,
+and active flag update.

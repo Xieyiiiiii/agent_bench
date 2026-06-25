@@ -69,3 +69,28 @@ for each predicate field.
   exceeds a valid worst Top-K distance.
 - Counters must prove all key paths ran: filtered, full distance, abandoned
   distance, valid Top-K.
+
+## CGRA single-function boundary
+
+The CGRA version maps to `enns_filtered_core.c` and should keep the full
+control-flow-heavy slice: metadata filter, valid Top-K boundary check, full L2,
+early abandon, and Top-K update. Host helpers such as `passes_filter`,
+`topk_boundary_is_valid`, `l2_distance_until_cutoff`, and
+`update_topk_min_distance` are expanded inline:
+
+```text
+enns_filtered_core
+  initialize topk and counters
+  for each document
+    read flat metadata and apply predicate
+    skip filtered documents
+    run full L2 when boundary is invalid
+    otherwise run cutoff L2 with early abandon
+    insert complete candidates into Top-K
+  write topk and branch counters to out[]
+```
+
+The CGRA form uses flat metadata arrays instead of `DocMeta`. The output buffer
+must prove filter, full-distance, abandon, and boundary-valid paths. This is a
+control-flow-heavy kernel; early abandon and boundary validation should not be
+removed unless the mapping explicitly downgrades the covered slice.

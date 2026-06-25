@@ -65,3 +65,27 @@ metadata 保持在一个紧凑的 `DocMeta` 数组中，不要为每个 predicat
 - Top-K 未填满前必须走完整 L2 distance。
 - early abandon 只能在 partial L2 已经超过有效 Top-K worst distance 时拒绝候选。
 - counters 必须证明 filtered、full distance、abandoned distance 和 valid Top-K 路径都被触发。
+
+## CGRA 单函数实现边界
+
+CGRA 版本对应 `enns_filtered_core.c`，优先完整保留 filtered dense retrieval 的复杂控制流：
+metadata filter、Top-K boundary 有效性、完整 L2、early abandon 和 Top-K 更新。host
+版本中的 `passes_filter`、`topk_boundary_is_valid`、`l2_distance_until_cutoff`、
+`update_topk_min_distance` 等 helper 必须在单函数内直接展开。
+
+```text
+enns_filtered_core
+  初始化 topk 和 counters
+  遍历 document
+    读取 flat meta 字段并执行 predicate
+    如果 filter 失败，增加 filtered_out 并 continue
+    如果 Top-K boundary 无效，完整 L2
+    否则按 cutoff 做 partial L2 和 early abandon
+    完整候选进入内联 Top-K 插入
+  写回 topk、filtered_out、distance_full、distance_abandoned、invalid_boundary_abandon
+```
+
+CGRA 版本不使用 `DocMeta` 结构体，metadata 使用 flat `int meta[]`。输出 buffer 必须证明
+filter、full distance、abandon 和 boundary-valid 路径都被触发。该 slice 是
+control-flow-heavy kernel，不能为了压低指令数删除 early abandon 或 boundary 检查；若
+最终因指令数超限删减，必须在 mapping 中降低其分支覆盖声明。

@@ -57,3 +57,24 @@ main
 - `docs_scanned` 必须等于 `NUM_DOCS`。
 - Top-K 必须按 L2 distance 升序排列，分数相同用较小 `doc_id` tie-break。
 - 输出必须包含 IDs、distances 和 checksum，便于回归验证 exhaustive scan 行为。
+
+## CGRA 单函数实现边界
+
+CGRA 版本对应 `enns_flat_core.c`，只保留 exhaustive L2 scan 和 Top-K 更新核心。
+host 版本中的 `init_data`、`reset_result`、`l2_distance`、`update_topk_min_distance`、
+`checksum_result`、`print_result` 不在 CGRA 文件中作为函数存在，其行为必须在单个
+函数内直接展开：
+
+```text
+enns_flat_core
+  初始化 topk ids / distances
+  遍历 document
+    遍历维度并累加 squared L2
+    内联 Top-K 插入和 doc_id tie-break
+  写回 out[] 中的 ids、distances、docs_scanned
+```
+
+输入向量和 document matrix 由 host harness 准备，CGRA kernel 不构造 synthetic data。
+输出 buffer 至少包含 Top-K IDs、Top-K distances 和 `docs_scanned`。该 slice 的分支
+跳转复杂度较低，主要作为 dense scan baseline；它覆盖 Top-K 插入位置判断和双层循环，
+不作为复杂控制流代表。

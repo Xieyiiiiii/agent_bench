@@ -48,6 +48,8 @@ reference/                         参考来源、伪代码、瓶颈分析
 ref/kernel_reference_mapping.md    reference 到 C 实现边界的中文索引
 include/                           公共配置、Top-K、Q8、checksum helper
 src/                               6 个独立 C benchmark
+cgra_kernels/                      CGRA 单函数 kernel slice，按计划新增
+scripts/                           指令数审查脚本，按计划新增
 tests/                             输出生成和一致性检查脚本
 ```
 
@@ -75,6 +77,9 @@ tests/                             输出生成和一致性检查脚本
   `Pipeline`、FAISS index 或 NetworkX graph 对象。
 - Q8 fixed-point、token budget、tie-break、dangling redistribution 等契约不能在
   C 中自行改变；需要改变时必须先更新 reference。
+- CGRA 版本受硬件限制，必须遵守 `cgra_flatten_rewrite_plan.md`：单文件单函数、
+  无 helper call、无 `main`、无 print，输出通过 buffer 回写；完整算法超限时只能
+  摘取或拆分已文档化的 reference slice。
 
 ## 维护流程
 

@@ -61,3 +61,29 @@ manager object；remaining budget 是简单派生值。
 - packed document 的 `used_tokens` 不得超过 remaining token budget。
 - truncation 只能在 remaining budget 达到 minimum useful truncation threshold 时发生。
 - truncated packed document 的 `used_tokens` 必须等于当时的 remaining token budget。
+- CGRA slice 的固定容量是 `CGRA_CONTEXT_K`；当外部传入 `count` 更大时，只处理前
+  `CGRA_CONTEXT_K` 个候选，额外候选属于 host 侧窗口选择/overflow 责任。
+
+## CGRA 单函数实现边界
+
+CGRA 版本对应 `context_pack_core.c`，保留 score ordering、source/chunk duplicate skip、
+token budget full append、truncate 和 skip-budget 分支。host 版本中的
+`sort_candidates_by_score`、`is_duplicate_source_chunk`、`pack_candidate_with_budget`、
+`append_packed_doc` 必须在单函数中以内联阶段展开。
+
+```text
+context_pack_core
+  初始化 packed ids、used_tokens、counters
+  将 count 收敛到固定容量窗口
+  按 score 选择或排序候选
+  对每个候选
+    检查 source/chunk duplicate
+    计算 remaining budget
+    full append / truncate / skip budget 三路分支
+  写回 packed ids、used_tokens、truncated、skipped_duplicate、skipped_budget
+```
+
+如果完整 insertion sort 导致指令超限，可以改成固定小 K selection pass，但必须仍然保留
+score ordering 的 reference 语义和 tie-break。该 slice 是 control-flow-heavy context
+preparation workload，输出 buffer 必须证明 duplicate skip、truncate 或 budget skip
+至少一个复杂分支被触发。

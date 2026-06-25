@@ -86,6 +86,24 @@ C 函数契约：
 - Top-K scores 按 L2 distance 升序。
 - checksum 覆盖 IDs、scores、`DOCS_SCANNED`。
 
+CGRA kernel form:
+- `cgra_kernels/enns_flat_core.c`
+- 单文件单函数，无 `main`、无 helper call、无 print。
+- host helper `l2_distance` 和 `update_topk_min_distance` 在单函数内展开。
+
+CGRA slice boundary:
+- 覆盖 exhaustive L2 scan、Top-K min-distance update、doc_id tie-break。
+- 不覆盖 host synthetic data 初始化、checksum、print。
+
+Instruction budget risk:
+- 低。该 kernel 是 dense scan baseline，预计可完整保留。
+
+Split policy:
+- 默认不拆分；若超 576 指令，优先减少 `num_docs` 或 `dim`，不删除 Top-K tie-break。
+
+Branch/jump coverage:
+- baseline。覆盖 document/维度双层循环和 Top-K 插入位置判断，分支复杂度较低。
+
 ## haystack_enns_filtered.c
 
 Kernel: `haystack_enns_filtered.c`
@@ -153,6 +171,27 @@ C 函数契约：
 - `DISTANCE_ABANDONED > 0`
 - Top-K IDs 有效。
 - early abandon 不得在 Top-K boundary 无效时发生。
+
+CGRA kernel form:
+- `cgra_kernels/enns_filtered_core.c`
+- 单文件单函数，无结构体；metadata 使用 flat `int meta[]`。
+- host helper `passes_filter`、`topk_boundary_is_valid`、`l2_distance_until_cutoff`、
+  `update_topk_min_distance` 在单函数内展开。
+
+CGRA slice boundary:
+- 覆盖 metadata filter、完整 L2、boundary-valid 判断、early abandon、Top-K update。
+- 不覆盖 host 初始化、checksum、print。
+
+Instruction budget risk:
+- 中。该 kernel 必须优先保留完整复杂控制流。
+
+Split policy:
+- 默认不拆分；若超 576 指令，优先缩小 `num_docs` 或 `dim`，不能首先删除 early abandon
+  或 boundary-valid 检查。
+
+Branch/jump coverage:
+- control-flow-heavy。必须覆盖 filtered path、full-distance path、abandoned path 和
+  valid-boundary path。
 
 ## haystack_bm25.c
 
@@ -246,6 +285,33 @@ C 函数契约：
 - Q8 乘除顺序、舍入和 denominator 为 0 的行为必须匹配 reference。
 - checksum 覆盖 Top-K IDs、scores、active/filter/empty counters。
 
+CGRA kernel form:
+- 第一阶段为 `cgra_kernels/bm25_score_core.c`。
+- 如 Top-K collection 导致超限，可新增 `cgra_kernels/bm25_topk_core.c`。
+- 单文件单函数；posting arrays、doc stats、idf_q8、score_q8、active flags 通过指针传入。
+
+CGRA slice boundary:
+- `bm25_score_core.c` 覆盖 query term loop、posting-list traversal、empty term branch、
+  metadata filter、Q8 contribution、score accumulation、active flag update。
+- 第一阶段不强制覆盖 active-doc Top-K；若拆出 `bm25_topk_core.c`，该文件单独匹配
+  active-doc Top-K collection。
+- 不覆盖 tokenizer、IDF 计算、index/query 初始化、checksum、print。
+
+Instruction budget risk:
+- 高。BM25 的 posting traversal、除法和 fixed-point scoring 可能接近或超过 576 指令。
+- host reference 使用 int64 intermediates 定义数学语义；CGRA slice 优先使用受控输入和
+  32-bit 算术，必须通过反汇编确认没有 runtime helper call。
+
+Split policy:
+- 优先保留 scoring slice；Top-K 可拆分。
+- 若除法或宽乘法产生 call-like 指令，必须缩小输入范围、改写算术或进一步摘取核心评分路径。
+- 输出 counter 必须使用确定语义：`accepted_postings`、`filtered_out`、`empty_terms`、
+  `active_docs_after_scoring`；不得使用 estimate。
+
+Branch/jump coverage:
+- control-flow-heavy。必须覆盖 query term loop、empty posting list、filtered posting、
+  accepted posting accumulation 和 active flag update。
+
 ## haystack_hybrid_merge.c
 
 Kernel: `haystack_hybrid_merge.c`
@@ -291,6 +357,8 @@ Kernel: `haystack_hybrid_merge.c`
 C 行为：
 - dense list 先 merge，sparse list 后 merge。
 - v0 synthetic input 保证同一来源内部无 duplicate。
+- v0 synthetic input 和 CGRA host harness 必须保证 dense/sparse `doc_id` 是合法 metadata
+  index；CGRA slice 没有 `num_docs` 参数，不在加速器侧做上界检查。
 - `DUPLICATES` 统计跨来源重复：sparse candidate 命中已被 dense 接受的 `doc_id`。
 - filtered candidate 不分配 merged slot。
 - final score 是 source score 的 weighted sum，不使用 rank reciprocal。
@@ -331,6 +399,27 @@ C 函数契约：
 - Top-K 按 `merged_score_q8` 降序，分数相同用更小 `doc_id` tie-break。
 - 文档和输出不得声称实现 RRF。
 
+CGRA kernel form:
+- `cgra_kernels/hybrid_merge_core.c`
+- 单文件单函数；dense/sparse candidates、doc metadata 和输出均使用 flat arrays。
+- host helper `merge_candidate_list`、`find_merged`、`insert_or_find_merged`、
+  `score_merged_candidates_q8`、`collect_merged_topk` 在单函数内展开。
+
+CGRA slice boundary:
+- 覆盖 dense/sparse ingest、filter、cross-source duplicate detection、weighted Q8 merge、
+  overflow counter 和 Top-K max-score update。
+- 不覆盖 RRF、duplicate bonus、host initialization、input validity checks、checksum、print。
+
+Instruction budget risk:
+- 中。若超限，优先缩小 `DENSE_K`、`SPARSE_K`、`MERGE_MAX`。
+
+Split policy:
+- 默认不拆分；若必须拆分，可拆成 ingest/score-topk 两个单函数文件，但 mapping 必须写明
+  每个 part 对应的伪代码阶段。
+
+Branch/jump coverage:
+- control-flow-heavy。必须覆盖 source branch、filter、duplicate search、overflow 和 Top-K update。
+
 ## haystack_context_pack.c
 
 Kernel: `haystack_context_pack.c`
@@ -368,6 +457,8 @@ Kernel: `haystack_context_pack.c`
 
 C 行为：
 - 对 deterministic candidates 按 score 降序排序。
+- CGRA 固定容量窗口为 `CGRA_CONTEXT_K`；若 `count > CGRA_CONTEXT_K`，只处理前
+  `CGRA_CONTEXT_K` 个候选，窗口外候选由 host 侧选择或 overflow 统计负责。
 - 分数相同用更小 `doc_id` tie-break。
 - 已 packed 的 `(source_id, chunk_id)` 再出现时跳过。
 - full token_len fits 时完整加入。
@@ -406,6 +497,28 @@ C 函数契约：
 - truncated entry 的 `used_tokens` 等于 append 前的 remaining budget。
 - duplicate 检查基于 `(source_id, chunk_id)`，不是 `doc_id`。
 - checksum 覆盖 packed IDs、used tokens、counters。
+
+CGRA kernel form:
+- `cgra_kernels/context_pack_core.c`
+- 单文件单函数；candidate fields 使用 flat arrays，packed output 写入 `out[]`。
+- 入口先把 `count` 收敛到 `0..CGRA_CONTEXT_K`，避免 fixed local arrays 越界。
+- host helper `sort_candidates_by_score`、`is_duplicate_source_chunk`、
+  `pack_candidate_with_budget`、`append_packed_doc` 在单函数内展开。
+
+CGRA slice boundary:
+- 覆盖 score ordering、source/chunk duplicate skip、token budget full append、truncate、
+  skip-budget 分支。
+- 不覆盖 Jinja、字符串、tokenizer、host checksum、print。
+
+Instruction budget risk:
+- 中高。排序和 duplicate check 同时保留可能接近 576 指令。
+
+Split policy:
+- 若 insertion sort 超限，可改成固定小 K selection pass，但必须保留 score-ordering 语义和 tie-break。
+- 不建议拆分，除非排序和 packing 合并后无法通过指令预算。
+
+Branch/jump coverage:
+- control-flow-heavy。必须覆盖 duplicate skip、full append、truncate 和 budget skip 中的关键路径。
 
 ## haystack_lexrank.c
 
@@ -494,3 +607,25 @@ C 函数契约：
 - rank initialization、damping、base term、Q8 truncation policy 可见。
 - checksum 覆盖 selected IDs、rank-derived scores 或 selected order、edges、iterations、
   redundancy counter。
+
+CGRA kernel form:
+- 第一阶段为 `cgra_kernels/lexrank_rank_core.c`。
+- 完整覆盖需要拆成 `lexrank_sim_graph_core.c`、`lexrank_rank_core.c`、
+  `lexrank_select_core.c`。
+
+CGRA slice boundary:
+- `lexrank_rank_core.c` 只匹配 PageRank-style iterative update block。
+- 它覆盖 dangling_sum、incoming edge scan、Q8 damping update、fixed iterations。
+- 它不覆盖 sentence similarity matrix、threshold graph construction 或 redundancy selection。
+
+Instruction budget risk:
+- 高。完整 LexRank pipeline 大概率超过 576 指令，默认按阶段拆分。
+
+Split policy:
+- 优先实现 `lexrank_rank_core.c`。
+- 如果需要完整 pipeline，必须拆成多个单函数文件，并为每个文件记录对应 reference
+  pseudocode block。
+
+Branch/jump coverage:
+- control-flow-heavy。`lexrank_rank_core.c` 必须覆盖 dangling node detection、
+  incoming edge scan 和 fixed rank iteration。

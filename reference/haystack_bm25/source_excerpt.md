@@ -63,7 +63,7 @@ scoring, score accumulation, and active-document Top-K collection.
 
 ## Fixed-point scoring contract
 
-All BM25 arithmetic in C must use Q8 integers and int64 intermediates:
+Host reference BM25 arithmetic must use Q8 integers and int64 intermediates:
 
 ```text
 Q8_ONE = 256
@@ -80,6 +80,13 @@ score_q8[doc_id] += term_score_q8
 
 Division truncates toward zero. If `avg_doc_len` or `denom_q8` is zero, the
 term contribution must be zero and the benchmark should still complete.
+
+CGRA single-function slices must preserve this Q8 operation order and
+toward-zero truncation when possible, but they may use bounded 32-bit
+arithmetic if required to avoid backend runtime helper calls. Any such
+narrowing must be documented in the CGRA slice boundary and verified by
+disassembly; the slice must not silently change denominator-zero behavior or
+branch/counter semantics.
 
 ## C function mapping contract
 

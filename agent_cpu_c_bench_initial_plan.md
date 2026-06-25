@@ -26,6 +26,14 @@ score fusion 和 Top-K 等 CPU-side 行为。加速器是 CPU 的协助单元，
 `README.md`。本文件仍作为后续维护和审计的计划/约束文档使用：当 C 行为需要
 调整时，必须先回到 reference 和本计划确认边界，再修改实现。
 
+硬件约束更新：当前 CGRA 编译器前端暂时不能处理函数调用，芯片端单个 kernel 还受
+`6 * 6 * 16 = 576` 条指令容量约束。因此本文件中关于 `main -> init -> reset ->
+run_kernel -> helper -> checksum -> print` 的函数链要求，只适用于 `src/` 下的
+host reference benchmark。后续新增的 `cgra_kernels/` 版本必须遵守
+`cgra_flatten_rewrite_plan.md`：单文件单函数、无 helper call、无 `main`、无 print，
+通过输出 buffer 回写结果。若完整算法超出指令预算，必须摘取 reference 中最重要的
+workload slice 或拆成多个单函数文件，并在 mapping 和 analysis 中写清边界。
+
 ---
 
 ## 1. 强制目录结构
@@ -83,9 +91,23 @@ agent_benchmark/
     haystack_context_pack.c
     haystack_lexrank.c
 
+  cgra_kernels/
+    README.md
+    enns_flat_core.c
+    enns_filtered_core.c
+    bm25_score_core.c
+    hybrid_merge_core.c
+    context_pack_core.c
+    lexrank_rank_core.c
+    ...
+
+  scripts/
+    count_instructions.sh
+
   tests/
     run_all.sh
     check_outputs.sh
+    check_cgra_shape.sh
 ```
 
 `PROJECT_OVERVIEW.md` 解释 benchmark 选择依据和这些 CPU workload 在 agent/RAG
@@ -94,6 +116,10 @@ agent_benchmark/
 
 `build/` 是 `make all` 或 `make test` 生成的运行目录，包含可执行文件和
 `*.out` 输出，不属于源文件或 reference 文档，完成验证后应通过 `make clean` 清理。
+
+`cgra_kernels/` 是硬件受限版本目录。它不替代 `src/` 的 host reference，而是把
+reference 行为中最关键的控制流和算术 slice 扁平化为 CGRA 编译器当前能处理的单函数
+C 文件。
 
 ---
 
@@ -436,8 +462,13 @@ term_score_q8 = q8_mul(idf_q8[t], tf_weight_q8)
 score_q8[doc_id] += term_score_q8
 ```
 
-所有乘法和除法使用 int64 intermediate。除法 toward zero truncation。
+host reference 版本的所有乘法和除法使用 int64 intermediate。除法 toward zero truncation。
 如果 `avg_doc_len == 0` 或 `denom_q8 == 0`，该 term contribution 必须为 0。
+
+CGRA single-function slice 必须尽量保持上述 Q8 运算顺序和 toward-zero truncation，
+但如果目标后端会把 64-bit 乘除法降成 runtime helper call，可以在受控输入范围内使用
+bounded 32-bit arithmetic。任何这种收窄都必须写入 CGRA slice boundary，并通过反汇编
+确认没有 call-like 指令；zero-denominator 行为和 branch/counter 语义不得静默改变。
 
 **推荐结构**：
 
@@ -593,7 +624,10 @@ Required helper functions: `passes_filter`, `find_merged`, `insert_or_find_merge
 **重写注意事项**：
 
 - v0 必须默认实现 pure weighted merge；
-- weighted merge 必须使用 Q8 arithmetic 和 int64 intermediate，division toward zero；
+- host reference weighted merge 必须使用 Q8 arithmetic 和 int64 intermediate，division toward zero；
+- CGRA single-function slice 必须保留 weighted merge、missing source = 0 和 deterministic
+  tie-break 语义；如为避免 runtime helper call 使用 bounded 32-bit arithmetic，必须在
+  CGRA slice boundary 中说明并通过反汇编验证；
 - duplicate bonus 不实现；
 - RRF 只能写入 not implemented，不能作为当前 C 行为；
 - dense+sparse duplicate bonus 不应默认实现；如果未来保留，必须标成
@@ -778,6 +812,10 @@ Required helper functions: `sentence_sim_q8`, `compute_similarity_matrix`,
 
 ### 7.1 面向过程实现风格
 
+本节默认描述 `src/` 下的 host reference benchmark。host 版本追求可读性、可回归测试
+和完整算法流程解释，因此允许使用少量 helper 函数。`cgra_kernels/` 下的硬件版本不适用
+这些 helper 函数要求；它必须把同样的算法阶段写成单函数内的显式代码块。
+
 每个 kernel 必须用清晰的过程式函数链描述算法阶段。推荐调用链：
 
 ```text
@@ -821,6 +859,18 @@ CGRA benchmark 额外约束：
 - 小核内部可以近似真实 workload 的复杂控制流，但必须在 reference 中标成
   benchmark-defined policy；
 - 如果某个近似行为是为了芯片测试而加入的，必须有注释、counter 或输出字段证明其执行。
+
+CGRA single-function 版本额外约束：
+
+- 每个 `cgra_kernels/*.c` 文件只能有一个函数定义；
+- 不能定义 `main()`；
+- 不能调用 helper、标准库函数、`printf`、`memcpy`、`malloc`；
+- 不包含 `stdio.h`；
+- 尽量使用 flat arrays 和简单标量，不使用冗余 wrapper 结构；
+- 输出通过调用方传入的 buffer 回写；
+- 反汇编不得出现 call-like 指令；
+- 每个文件的指令数目标不超过 576；
+- 对 control-flow-heavy kernel，必须保留能代表复杂分支/跳转的路径，并用输出字段证明执行。
 
 ### 7.2 数据结构复杂度上限
 
@@ -978,11 +1028,14 @@ bash tests/check_outputs.sh
 - `source_excerpt.md` 有 `C function mapping contract`；
 - `analysis.md` 和 `analysis_zh.md` 都说明 CPU bottleneck；
 - `analysis.md` 和 `analysis_zh.md` 都说明过程式函数链；
+- 如果实现 `cgra_kernels/`，`analysis.md` 和 `analysis_zh.md` 都必须包含 CGRA
+  single-function boundary；
 - `ref/kernel_reference_mapping.md` 同步列出三个 reference archive 文件。
 
 ### 10.2 行为匹配
 
 - 每个 reference 伪代码动作都能映射到一个明确 C 函数；
+- 对 CGRA 版本，每个 CGRA 文件都必须映射到一个明确 reference slice；
 - 每个 benchmark-only extension 都有注释和 counter；
 - 每个 CGRA 近似行为都明确写成 benchmark-defined policy，不能冒充上游行为；
 - 每个 critical branch 都有 deterministic synthetic data 触发；

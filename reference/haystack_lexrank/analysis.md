@@ -71,3 +71,28 @@ arrays. Avoid wrapping each matrix in separate single-field structures.
   visible in the implementation.
 - Redundancy filtering must compare a candidate against already selected
   sentences before insertion.
+
+## CGRA single-function boundary
+
+The full LexRank pipeline is likely too large for the 576-instruction budget, so
+the CGRA form is split by default. The first slice, `lexrank_rank_core.c`, maps
+only to the PageRank-style iterative update block in `source_excerpt.md`. It
+does not implement similarity matrix construction, threshold graph
+construction, or redundancy-based summary selection.
+
+```text
+lexrank_rank_core
+  read graph, out_degree, rank_old_q8
+  for fixed iterations
+    compute dangling_sum
+    scan incoming edges for each destination
+    apply Q8 damping update
+    copy rank_new_q8 back to rank_old_q8
+  write iterations and dangling_sources_seen
+```
+
+Full LexRank coverage requires separate single-function files such as
+`lexrank_sim_graph_core.c`, `lexrank_rank_core.c`, and
+`lexrank_select_core.c`, each mapped to a specific reference pseudocode block.
+`lexrank_rank_core.c` is a control-flow-heavy slice because of dangling-node
+detection, incoming-edge scans, and fixed rank iterations.
