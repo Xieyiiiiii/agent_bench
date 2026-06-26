@@ -40,7 +40,6 @@ make clean
 
 ```text
 PROJECT_OVERVIEW.md                项目背景、benchmark 选择理由、当前状态
-agent_cpu_c_bench_initial_plan.md  reference-first 实施计划和实现约束
 README.md                          使用入口
 Makefile                           构建、测试、清理入口
 
@@ -48,8 +47,8 @@ reference/                         参考来源、伪代码、瓶颈分析
 ref/kernel_reference_mapping.md    reference 到 C 实现边界的中文索引
 include/                           公共配置、Top-K、Q8、checksum helper
 src/                               6 个独立 C benchmark
-cgra_kernels/                      CGRA 单函数 kernel slice，按计划新增
-scripts/                           指令数审查脚本，按计划新增
+cgra_kernels/                      CGRA 单函数 kernel slice
+scripts/                           指令数审查和辅助脚本
 tests/                             输出生成和一致性检查脚本
 ```
 
@@ -77,9 +76,10 @@ tests/                             输出生成和一致性检查脚本
   `Pipeline`、FAISS index 或 NetworkX graph 对象。
 - Q8 fixed-point、token budget、tie-break、dangling redistribution 等契约不能在
   C 中自行改变；需要改变时必须先更新 reference。
-- CGRA 版本受硬件限制，必须遵守 `cgra_flatten_rewrite_plan.md`：单文件单函数、
-  无 helper call、无 `main`、无 print，输出通过 buffer 回写；完整算法超限时只能
-  摘取或拆分已文档化的 reference slice。
+- CGRA 版本受硬件限制，必须遵守 `cgra_kernels/README.md` 和
+  `ref/kernel_reference_mapping.md`：单文件单函数、150 条反汇编指令 practical target、
+  无 helper call、无 `main`、无 print、无 `continue`/`break`，输出通过 buffer 回写；
+  完整算法超限时只能摘取或拆分已文档化的 reference slice。
 
 ## 维护流程
 

@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CC_BIN="${CGRA_CC:-${CC:-gcc}}"
 OBJDUMP_BIN="${CGRA_OBJDUMP:-${OBJDUMP:-objdump}}"
-MAX_INSTRUCTIONS="${CGRA_MAX_INSTRUCTIONS:-576}"
+MAX_INSTRUCTIONS="${CGRA_MAX_INSTRUCTIONS:-150}"
 CGRA_CFLAGS_DEFAULT="-std=c99 -Wall -Wextra -Werror -O2 -ffreestanding -fno-builtin -fno-stack-protector -fno-tree-loop-distribute-patterns"
 CGRA_CFLAGS_BIN="${CGRA_CFLAGS:-$CGRA_CFLAGS_DEFAULT}"
 OUT_DIR="$ROOT_DIR/build/cgra"

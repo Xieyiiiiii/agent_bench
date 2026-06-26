@@ -72,9 +72,10 @@ for each predicate field.
 
 ## CGRA single-function boundary
 
-The CGRA version maps to `enns_filtered_core.c` and should keep the full
-control-flow-heavy slice: metadata filter, valid Top-K boundary check, full L2,
-early abandon, and Top-K update. Host helpers such as `passes_filter`,
+The CGRA version maps to `enns_filtered_core.c`. Under the 150-instruction
+target it should use a Top-2 filtered dense retrieval slice while preserving the
+core control flow: metadata filter, valid Top-K boundary check, full L2, early
+abandon, and Top-K update. Host helpers such as `passes_filter`,
 `topk_boundary_is_valid`, `l2_distance_until_cutoff`, and
 `update_topk_min_distance` are expanded inline:
 
@@ -83,14 +84,25 @@ enns_filtered_core
   initialize topk and counters
   for each document
     read flat metadata and apply predicate
-    skip filtered documents
-    run full L2 when boundary is invalid
-    otherwise run cutoff L2 with early abandon
-    insert complete candidates into Top-K
-  write topk and branch counters to out[]
+    count filtered documents without continue
+    otherwise enter the distance path
+      run full L2 when the Top-2 boundary is invalid
+      otherwise run cutoff L2 with early abandon
+      insert complete candidates into Top-2
+  write top2 and branch counters to out[]
 ```
 
 The CGRA form uses flat metadata arrays instead of `DocMeta`. The output buffer
-must prove filter, full-distance, abandon, and boundary-valid paths. This is a
-control-flow-heavy kernel; early abandon and boundary validation should not be
-removed unless the mapping explicitly downgrades the covered slice.
+must prove filter, full-distance, abandon, and boundary-valid paths. For the
+150-instruction slice, the comparison target is Top-2 behavior: either run a
+Top-2 reference slice or compare only against the first two entries of the host
+Top-4 result. The recommended output layout is `out[0..1]` for Top-2 document
+IDs, `out[2..3]` for Top-2 distances, followed by `filtered_out`,
+`distance_full`, and `distance_abandoned`. Counters must be compared against a
+Top-2 reference slice, not against the Top-4 reference counters, because the
+Top-K boundary becomes valid at a different time and may change early-abandon
+counts. This is a control-flow-heavy kernel. The 150-instruction plan may
+remove defensive counters such as `invalid_boundary_abandon`, but early abandon
+and boundary validation must remain. The current frontend cannot lower
+`continue` or `break`, so rejected paths must use nested `if` blocks and a
+`complete` flag.

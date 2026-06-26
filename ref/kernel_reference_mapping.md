@@ -99,7 +99,8 @@ Instruction budget risk:
 - 低。该 kernel 是 dense scan baseline，预计可完整保留。
 
 Split policy:
-- 默认不拆分；若超 576 指令，优先减少 `num_docs` 或 `dim`，不删除 Top-K tie-break。
+- 默认不拆分。理论硬件上限是 576 条指令，但当前 practical target 是 150 条；
+  若未来超过实际阈值，优先减少 `num_docs` 或 `dim`，不删除 Top-K tie-break。
 
 Branch/jump coverage:
 - baseline。覆盖 document/维度双层循环和 Top-K 插入位置判断，分支复杂度较低。
@@ -175,19 +176,32 @@ C 函数契约：
 CGRA kernel form:
 - `cgra_kernels/enns_filtered_core.c`
 - 单文件单函数，无结构体；metadata 使用 flat `int meta[]`。
+- 150 指令计划下使用 Top-2 CGRA slice；host reference 仍保留 Top-4 测例语义。
+- 行为对比时必须使用 Top-2 slice reference，或只比较 host Top-4 结果中的前两个
+  IDs/scores；不得要求 CGRA Top-2 输出匹配完整 Top-4 布局。
+- `distance_full`、`distance_abandoned` 等 counters 必须来自 Top-2 reference slice；
+  不能直接用 Top-4 reference counters 对比 Top-2 CGRA，因为 boundary valid 时机不同。
+- 推荐输出布局为 `out[0..1] = top2 doc IDs`、`out[2..3] = top2 squared L2`
+  distances、`out[4] = filtered_out`、`out[5] = distance_full`、
+  `out[6] = distance_abandoned`。
+- 不使用 `continue`/`break`；filter reject 和 abandon path 用嵌套 `if` 与 `complete`
+  flag 表达。
 - host helper `passes_filter`、`topk_boundary_is_valid`、`l2_distance_until_cutoff`、
   `update_topk_min_distance` 在单函数内展开。
 
 CGRA slice boundary:
-- 覆盖 metadata filter、完整 L2、boundary-valid 判断、early abandon、Top-K update。
+- 覆盖 metadata filter、完整 L2、boundary-valid 判断、early abandon、Top-2 update。
 - 不覆盖 host 初始化、checksum、print。
+- `invalid_boundary_abandon` 是调试性防御 counter，150 指令 slice 可删除；early abandon
+  仍必须只在 boundary valid 时发生。
 
 Instruction budget risk:
-- 中。该 kernel 必须优先保留完整复杂控制流。
+- 中。该 kernel 必须优先保留完整复杂控制流；若要压到 150，优先降低 Top-K 宽度，
+  不先删除 filter 或 early abandon。
 
 Split policy:
-- 默认不拆分；若超 576 指令，优先缩小 `num_docs` 或 `dim`，不能首先删除 early abandon
-  或 boundary-valid 检查。
+- 默认不拆分；若超过 150 指令，优先使用 Top-2 和精简 counter。仍超限时再缩小
+  `num_docs` 或 `dim`，不能首先删除 early abandon 或 boundary-valid 检查。
 
 Branch/jump coverage:
 - control-flow-heavy。必须覆盖 filtered path、full-distance path、abandoned path 和
@@ -298,7 +312,8 @@ CGRA slice boundary:
 - 不覆盖 tokenizer、IDF 计算、index/query 初始化、checksum、print。
 
 Instruction budget risk:
-- 高。BM25 的 posting traversal、除法和 fixed-point scoring 可能接近或超过 576 指令。
+- 高。BM25 的 posting traversal、除法和 fixed-point scoring 在理论 576 条上限内
+  仍可能偏大；当前 practical target 是 150 条，必须按 slice 审查。
 - host reference 使用 int64 intermediates 定义数学语义；CGRA slice 优先使用受控输入和
   32-bit 算术，必须通过反汇编确认没有 runtime helper call。
 
@@ -400,22 +415,42 @@ C 函数契约：
 - 文档和输出不得声称实现 RRF。
 
 CGRA kernel form:
-- `cgra_kernels/hybrid_merge_core.c`
-- 单文件单函数；dense/sparse candidates、doc metadata 和输出均使用 flat arrays。
+- 150 指令计划下拆成两个单函数文件：
+  - `cgra_kernels/hybrid_merge_ingest_core.c`
+  - `cgra_kernels/hybrid_merge_score_topk_core.c`
+- dense/sparse candidates、merged table、doc metadata 和输出均使用 flat arrays。
+- `hybrid_merge_ingest_core.c` 输出 `merged_doc[]`、`merged_dense_q8[]`、
+  `merged_sparse_q8[]`、`merged_mask[]` 和 `out[0] = merged_count`；
+  `hybrid_merge_score_topk_core.c` 通过参数接收 `merged_count`，不重新读取原始
+  dense/sparse candidate lists。
+- 第二阶段的 reference 对比对象是第一阶段输出的 merged flat table，而不是原始
+  dense/sparse list。验收时先检查 ingest 的 `merged_count`、`duplicates`、
+  `filtered`、`overflow`，再把同一 merged table 喂给 score/topk 检查 weighted score
+  和 Top-K。
+- `hybrid_merge_score_topk_core.c` 是只读消费中间表的阶段，不得修改 `merged_doc[]`、
+  `merged_dense_q8[]`、`merged_sparse_q8[]` 或 `merged_mask[]`。
+- 不使用 `continue`/`break`；filter、duplicate 和 overflow 路径用嵌套 `if` 表达。
 - host helper `merge_candidate_list`、`find_merged`、`insert_or_find_merged`、
-  `score_merged_candidates_q8`、`collect_merged_topk` 在单函数内展开。
+  `score_merged_candidates_q8`、`collect_merged_topk` 在两个单函数 slice 内展开。
 
 CGRA slice boundary:
-- 覆盖 dense/sparse ingest、filter、cross-source duplicate detection、weighted Q8 merge、
-  overflow counter 和 Top-K max-score update。
+- `hybrid_merge_ingest_core.c` 覆盖 dense/sparse ingest、metadata filter、
+  cross-source duplicate detection、linear merged-table search 和 overflow counter。
+- `hybrid_merge_score_topk_core.c` 覆盖 weighted Q8 merge、missing-source score=0
+  和 Top-K max-score update。
 - 不覆盖 RRF、duplicate bonus、host initialization、input validity checks、checksum、print。
 
 Instruction budget risk:
-- 中。若超限，优先缩小 `DENSE_K`、`SPARSE_K`、`MERGE_MAX`。
+- 高。当前单函数 266 条，超过 150 阈值；默认按 ingest / score-topk 拆分。
 
 Split policy:
-- 默认不拆分；若必须拆分，可拆成 ingest/score-topk 两个单函数文件，但 mapping 必须写明
-  每个 part 对应的伪代码阶段。
+- 必须拆分。若拆分后某个 part 仍超过 150，优先缩小 `MERGE_MAX` 或 Top-K 宽度，
+  不删除 filter、duplicate search、overflow 或 weighted merge。
+- 旧的 `cgra_kernels/hybrid_merge_core.c` 不得继续作为 `.c` 文件留在 `cgra_kernels/`
+  中参与检查；最终目录内只保留拆分后的 150 指令 slice。
+- `hybrid_merge_score_topk_core.c` 默认保留 Top-4；若反汇编仍超过 150，允许降为
+  Top-2，但必须同步更新输出布局、`reference/haystack_hybrid_merge/analysis*.md`
+  和本 mapping，明确这是 CGRA 150 指令 slice 的容量裁剪。
 
 Branch/jump coverage:
 - control-flow-heavy。必须覆盖 source branch、filter、duplicate search、overflow 和 Top-K update。
@@ -457,8 +492,13 @@ Kernel: `haystack_context_pack.c`
 
 C 行为：
 - 对 deterministic candidates 按 score 降序排序。
-- CGRA 固定容量窗口为 `CGRA_CONTEXT_K`；若 `count > CGRA_CONTEXT_K`，只处理前
-  `CGRA_CONTEXT_K` 个候选，窗口外候选由 host 侧选择或 overflow 统计负责。
+- host reference 保留 deterministic candidate list 的排序和 packing 行为。
+- 150 指令 CGRA slice 可将固定容量窗口缩小为 `CGRA_CONTEXT_K = 4`。进入 CGRA
+  的输入必须已经是 host 预选或裁剪后的候选窗口；CGRA 只负责这个窗口内部的
+  score ordering、dedup、budget 和 truncate 行为。不能把完整 host candidate list 的
+  最终 packing 结果直接作为该 slice 的逐项匹配目标。
+- host 预选窗口必须 deterministic；测试必须固定窗口内容和输入顺序，使 slice
+  行为可复现。
 - 分数相同用更小 `doc_id` tie-break。
 - 已 packed 的 `(source_id, chunk_id)` 再出现时跳过。
 - full token_len fits 时完整加入。
@@ -497,11 +537,19 @@ C 函数契约：
 - truncated entry 的 `used_tokens` 等于 append 前的 remaining budget。
 - duplicate 检查基于 `(source_id, chunk_id)`，不是 `doc_id`。
 - checksum 覆盖 packed IDs、used tokens、counters。
+- 若验证 CGRA 150 指令 slice，reference 必须先裁剪到同一个 `CGRA_CONTEXT_K = 4`
+  窗口，再比较窗口内排序、duplicate、budget、truncate 和 counters。
+- 该固定窗口应由 host harness deterministic 产生；窗口选择本身不属于 CGRA slice
+  行为匹配范围。
 
 CGRA kernel form:
 - `cgra_kernels/context_pack_core.c`
 - 单文件单函数；candidate fields 使用 flat arrays，packed output 写入 `out[]`。
-- 入口先把 `count` 收敛到 `0..CGRA_CONTEXT_K`，避免 fixed local arrays 越界。
+- 150 指令计划下将候选窗口缩小到 4 或 5，优先 4。
+- `count > CGRA_CONTEXT_K` 时的窗口外候选不属于 CGRA slice 行为匹配范围；由 host
+  harness 负责预选窗口或记录容量 overflow。
+- 不使用 `continue`/`break`；duplicate skip、budget skip 和 no-best path 用嵌套
+  `if` 表达。
 - host helper `sort_candidates_by_score`、`is_duplicate_source_chunk`、
   `pack_candidate_with_budget`、`append_packed_doc` 在单函数内展开。
 
@@ -511,14 +559,17 @@ CGRA slice boundary:
 - 不覆盖 Jinja、字符串、tokenizer、host checksum、print。
 
 Instruction budget risk:
-- 中高。排序和 duplicate check 同时保留可能接近 576 指令。
+- 中高。当前 158 条，略高于 150 阈值；优先缩小固定窗口并减少临时数组搬移，
+  不删除 ordering、duplicate 或 budget 分支。
 
 Split policy:
-- 若 insertion sort 超限，可改成固定小 K selection pass，但必须保留 score-ordering 语义和 tie-break。
-- 不建议拆分，除非排序和 packing 合并后无法通过指令预算。
+- 默认不拆分。若窗口缩小和控制流改写后仍超 150，可改成更小 fixed-K selection pass，
+  但必须保留 score-ordering 语义和 tie-break。
 
 Branch/jump coverage:
-- control-flow-heavy。必须覆盖 duplicate skip、full append、truncate 和 budget skip 中的关键路径。
+- control-flow-heavy。实现代码必须保留 duplicate skip、full append、truncate 和
+  budget skip 四类路径；单个输入样例不必同时触发所有路径，但测试集必须覆盖这些
+  关键分支。
 
 ## haystack_lexrank.c
 
@@ -619,7 +670,8 @@ CGRA slice boundary:
 - 它不覆盖 sentence similarity matrix、threshold graph construction 或 redundancy selection。
 
 Instruction budget risk:
-- 高。完整 LexRank pipeline 大概率超过 576 指令，默认按阶段拆分。
+- 高。完整 LexRank pipeline 大概率超过理论 576 条上限；在当前 150 条 practical
+  target 下必须按阶段拆分。
 
 Split policy:
 - 优先实现 `lexrank_rank_core.c`。

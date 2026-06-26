@@ -39,40 +39,41 @@ int bm25_score_core(int *query_terms, int *list_start, int *list_len,
 
         if (len == 0) {
             empty_terms = empty_terms + 1;
-            continue;
-        }
+        } else {
+            for (pi = 0; pi < len; pi = pi + 1) {
+                int idx = start + pi;
+                int doc_id = post_doc[idx];
+                int tf = post_tf[idx];
+                int valid_doc = 1;
+                int term_score_q8 = 0;
+                int norm_q8 = 0;
+                int denom_q8 = 0;
+                int tf_num_q8 = 0;
+                int tf_weight_q8 = 0;
 
-        for (pi = 0; pi < len; pi = pi + 1) {
-            int idx = start + pi;
-            int doc_id = post_doc[idx];
-            int tf = post_tf[idx];
-            int term_score_q8 = 0;
-            int norm_q8 = 0;
-            int denom_q8 = 0;
-            int tf_num_q8 = 0;
-            int tf_weight_q8 = 0;
+                if (doc_id < 0 || doc_id >= num_docs) {
+                    valid_doc = 0;
+                } else if (doc_domain[doc_id] != 1) {
+                    valid_doc = 0;
+                }
 
-            if (doc_id < 0 || doc_id >= num_docs) {
-                filtered_out = filtered_out + 1;
-                continue;
-            }
-            if (doc_domain[doc_id] != 1) {
-                filtered_out = filtered_out + 1;
-                continue;
-            }
+                if (valid_doc == 0) {
+                    filtered_out = filtered_out + 1;
+                } else {
+                    norm_q8 = CGRA_Q8_ONE - CGRA_BM25_B_Q8 +
+                              (CGRA_BM25_B_Q8 * doc_len[doc_id]) / CGRA_BM25_AVG_DOC_LEN;
+                    denom_q8 = tf * CGRA_Q8_ONE +
+                               (CGRA_BM25_K1_Q8 * norm_q8) / CGRA_Q8_ONE;
 
-            norm_q8 = CGRA_Q8_ONE - CGRA_BM25_B_Q8 +
-                      (CGRA_BM25_B_Q8 * doc_len[doc_id]) / CGRA_BM25_AVG_DOC_LEN;
-            denom_q8 = tf * CGRA_Q8_ONE +
-                       (CGRA_BM25_K1_Q8 * norm_q8) / CGRA_Q8_ONE;
-
-            if (denom_q8 != 0) {
-                tf_num_q8 = tf * (CGRA_BM25_K1_Q8 + CGRA_Q8_ONE);
-                tf_weight_q8 = (tf_num_q8 * CGRA_Q8_ONE) / denom_q8;
-                term_score_q8 = (idf_q8[term] * tf_weight_q8) / CGRA_Q8_ONE;
-                score_q8[doc_id] = score_q8[doc_id] + term_score_q8;
-                active[doc_id] = 1;
-                accepted_postings = accepted_postings + 1;
+                    if (denom_q8 != 0) {
+                        tf_num_q8 = tf * (CGRA_BM25_K1_Q8 + CGRA_Q8_ONE);
+                        tf_weight_q8 = (tf_num_q8 * CGRA_Q8_ONE) / denom_q8;
+                        term_score_q8 = (idf_q8[term] * tf_weight_q8) / CGRA_Q8_ONE;
+                        score_q8[doc_id] = score_q8[doc_id] + term_score_q8;
+                        active[doc_id] = 1;
+                        accepted_postings = accepted_postings + 1;
+                    }
+                }
             }
         }
     }

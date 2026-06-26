@@ -11,14 +11,20 @@ Hardware/compiler constraints:
 - No `printf` or standard I/O.
 - No dynamic allocation or string/runtime helpers.
 - Outputs are written through caller-provided buffers.
-- Each function targets at most `6 * 6 * 16 = 576` disassembled instructions.
+- The hardware can hold at most `6 * 6 * 16 = 576` instructions, but routing
+  nodes reduce the practical kernel budget. The active rewrite plan uses
+  150 disassembled instructions per CGRA function as the implementation target.
+- The current frontend cannot lower `continue` or `break`; use nested `if`
+  blocks and simple state flags instead.
 - Runtime inputs must already be sanitized by the host harness where a slice has
   no `num_docs` or vocabulary-size parameter. For example, dense/sparse
   `doc_id` values must index valid metadata arrays before entering
-  `hybrid_merge_core`.
+  `hybrid_merge_ingest_core`.
 - Fixed-capacity slices process only their documented window. For
-  `context_pack_core`, `count` is capped to `CGRA_CONTEXT_K`; extra candidates
-  are host-side capacity overflow and are outside this single-function slice.
+  `context_pack_core`, the input must already be the host-selected window and
+  `count` is capped to `CGRA_CONTEXT_K`; extra candidates are host-side capacity
+  overflow and are outside this single-function slice. The selected window must
+  be deterministic for reproducible reference comparison.
 
 These files are not replacements for the host reference benchmarks. The host
 versions remain in `../src/` for readable algorithm flow and regression tests.
@@ -38,7 +44,12 @@ loops into libcalls such as `memset` or stack-protector hooks. For a target CGRA
 compiler, set `CGRA_CC`, `CGRA_OBJDUMP`, and optionally `CGRA_CFLAGS`; any
 remaining `call`/`bl`/`jal`-style instruction is treated as a violation.
 
-If a kernel exceeds the instruction budget or produces a call-like instruction,
-reduce the slice, shrink fixed constants, or split the workload into multiple
-single-function files and update the mapping documentation before changing the
-C behavior.
+If a kernel exceeds the practical instruction budget, uses unsupported control
+flow, or produces a call-like instruction, reduce the slice, shrink fixed
+constants, or split the workload into multiple single-function files and update
+the mapping documentation before changing the C behavior. When a workload is
+split, the old oversized `.c` file must be removed from this directory or moved
+out of the `*.c` check set. The 150-instruction rewrite splits hybrid merge
+into `hybrid_merge_ingest_core.c` and `hybrid_merge_score_topk_core.c`,
+compresses `enns_filtered_core.c` and `context_pack_core.c`, and keeps the host
+reference benchmarks in `../src/` unchanged.

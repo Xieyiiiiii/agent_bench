@@ -74,11 +74,13 @@ arrays. Avoid wrapping each matrix in separate single-field structures.
 
 ## CGRA single-function boundary
 
-The full LexRank pipeline is likely too large for the 576-instruction budget, so
-the CGRA form is split by default. The first slice, `lexrank_rank_core.c`, maps
-only to the PageRank-style iterative update block in `source_excerpt.md`. It
-does not implement similarity matrix construction, threshold graph
-construction, or redundancy-based summary selection.
+The full LexRank pipeline is likely too large for the theoretical
+576-instruction budget, and the active CGRA target is the stricter
+150-instruction practical budget, so the CGRA form is split by default. The
+first slice, `lexrank_rank_core.c`, maps only to the PageRank-style iterative
+update block in `source_excerpt.md`. It does not implement similarity matrix
+construction, threshold graph construction, or redundancy-based summary
+selection.
 
 ```text
 lexrank_rank_core

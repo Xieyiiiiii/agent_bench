@@ -62,5 +62,7 @@ main
 
 避免把 benchmark 写成小框架，也避免为每个数组或标量拆出单字段结构体。
 
-CGRA 单函数版本额外遵循 `cgra_flatten_rewrite_plan.md`：单文件单函数、无 helper
-call、无 `main`、无 print、输出 buffer 回写，并通过反汇编审查指令数和 call-like 指令。
+CGRA 单函数版本额外遵循 `../cgra_kernels/README.md` 和
+`../ref/kernel_reference_mapping.md`：单文件单函数、150 条反汇编指令 practical target、
+无 helper call、无 `main`、无 print、无 `continue`/`break`、输出 buffer 回写，并通过
+反汇编审查指令数和 call-like 指令。

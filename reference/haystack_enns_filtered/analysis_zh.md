@@ -68,7 +68,8 @@ metadata 保持在一个紧凑的 `DocMeta` 数组中，不要为每个 predicat
 
 ## CGRA 单函数实现边界
 
-CGRA 版本对应 `enns_filtered_core.c`，优先完整保留 filtered dense retrieval 的复杂控制流：
+CGRA 版本对应 `enns_filtered_core.c`。在 150 条指令目标下，它应裁剪为 Top-2
+filtered dense retrieval slice，但必须保留 filtered dense retrieval 的复杂控制流：
 metadata filter、Top-K boundary 有效性、完整 L2、early abandon 和 Top-K 更新。host
 版本中的 `passes_filter`、`topk_boundary_is_valid`、`l2_distance_until_cutoff`、
 `update_topk_min_distance` 等 helper 必须在单函数内直接展开。
@@ -78,14 +79,21 @@ enns_filtered_core
   初始化 topk 和 counters
   遍历 document
     读取 flat meta 字段并执行 predicate
-    如果 filter 失败，增加 filtered_out 并 continue
-    如果 Top-K boundary 无效，完整 L2
-    否则按 cutoff 做 partial L2 和 early abandon
-    完整候选进入内联 Top-K 插入
-  写回 topk、filtered_out、distance_full、distance_abandoned、invalid_boundary_abandon
+    如果 filter 失败，只增加 filtered_out
+    否则进入距离路径
+      如果 Top-2 boundary 无效，完整 L2
+      否则按 cutoff 做 partial L2 和 early abandon
+      完整候选进入内联 Top-2 插入
+  写回 top2、filtered_out、distance_full、distance_abandoned
 ```
 
 CGRA 版本不使用 `DocMeta` 结构体，metadata 使用 flat `int meta[]`。输出 buffer 必须证明
-filter、full distance、abandon 和 boundary-valid 路径都被触发。该 slice 是
-control-flow-heavy kernel，不能为了压低指令数删除 early abandon 或 boundary 检查；若
-最终因指令数超限删减，必须在 mapping 中降低其分支覆盖声明。
+filter、full distance、abandon 和 boundary-valid 路径都被触发。150 指令 slice 的对比
+目标是 Top-2 行为：要么运行 Top-2 reference slice，要么只比较 host Top-4 结果中的
+前两个 entry。建议输出布局为 `out[0..1]` 写 Top-2 doc IDs，`out[2..3]` 写 Top-2
+distances，随后写 `filtered_out`、`distance_full`、`distance_abandoned`。counters 必须
+和 Top-2 reference slice 对比，不能直接用 Top-4 reference counters，因为 Top-K
+boundary 的有效时机不同，early-abandon 触发次数可能变化。该 slice 是
+control-flow-heavy kernel。150 指令计划允许删除 `invalid_boundary_abandon` 这类防御性
+counter，但不能为了压低指令数删除 early abandon 或 boundary 检查。当前编译器前端
+不支持 `continue`/`break`，因此拒绝路径必须用嵌套 `if` 和 `complete` flag 表达。

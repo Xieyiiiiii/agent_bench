@@ -80,26 +80,44 @@ bottleneck.
 
 ## CGRA single-function boundary
 
-The CGRA version maps to `hybrid_merge_core.c` and keeps dense/sparse candidate
-ingest, metadata filtering, cross-source duplicate detection, weighted Q8
-merge, overflow handling, and Top-K update. Host helpers such as
+Under the 150-instruction plan, the CGRA version no longer maps the whole fusion
+flow into one `hybrid_merge_core.c` file. It is split into
+`hybrid_merge_ingest_core.c` and `hybrid_merge_score_topk_core.c`. Together the
+two slices keep dense/sparse candidate ingest, metadata filtering, cross-source
+duplicate detection, weighted Q8 merge, overflow handling, and Top-K update.
+The old oversized `hybrid_merge_core.c` should not remain as a checked `.c`
+file after the split.
+Host helpers such as
 `merge_candidate_list`, `passes_filter`, `find_merged`,
 `insert_or_find_merged`, `score_merged_candidates_q8`, and
 `collect_merged_topk` are expanded as inline stages:
 
 ```text
-hybrid_merge_core
-  initialize merged flat table, topk, counters
+hybrid_merge_ingest_core
+  initialize merged flat table and counters
   assume the host has supplied a valid doc_id window
   ingest dense candidates with filter and linear insert
   ingest sparse candidates with filter, duplicate count, and linear insert
+  write merged_count, duplicates, filtered, overflow
+
+hybrid_merge_score_topk_core
   for each merged entry
     compute weighted merged score
     inline Top-K max-score update
-  write topk, duplicates, filtered, overflow
+  write topk IDs/scores
 ```
+
+Validation must keep the two slice contracts visible. First compare
+`hybrid_merge_ingest_core` against the ingest reference by checking the merged
+flat arrays plus `merged_count`, `duplicates`, `filtered`, and `overflow`. Then
+feed that same merged table into `hybrid_merge_score_topk_core` and compare
+weighted Q8 scores and Top-K ordering. The second slice is not validated by
+re-reading the original dense/sparse lists, and it must not modify the merged
+flat arrays.
 
 The CGRA form uses flat arrays instead of `Candidate` or `MergedCandidate`
 structures. This is a control-flow-heavy candidate-fusion workload and must
 keep source branches, filters, duplicate search, overflow, and Top-K update.
-RRF and duplicate bonus remain not implemented.
+The current frontend cannot lower `continue` or `break`, so filter, duplicate,
+and overflow paths must use nested `if` blocks. RRF and duplicate bonus remain
+not implemented.

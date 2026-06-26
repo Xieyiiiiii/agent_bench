@@ -47,6 +47,10 @@ for src in "${files[@]}"; do
     echo "$src must use flat arrays/scalars, not structs" >&2
     exit 1
   fi
+  if grep -Eq '(^|[^A-Za-z0-9_])(continue|break)[[:space:]]*;' "$src"; then
+    echo "$src must not use continue or break" >&2
+    exit 1
+  fi
 done
 
 echo "check_cgra_shape: ok"
