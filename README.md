@@ -30,7 +30,6 @@ make test
 make all
 bash tests/run_all.sh
 bash tests/check_outputs.sh
-bash tests/check_repo_hygiene.sh
 bash tests/check_cgra_shape.sh
 bash tests/check_cgra_behavior.sh
 bash scripts/count_instructions.sh

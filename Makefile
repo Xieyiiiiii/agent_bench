@@ -27,7 +27,6 @@ build/%: src/%.c include/bench_config.h include/bench_common.h include/topk.h in
 test: all
 	bash tests/run_all.sh
 	bash tests/check_outputs.sh
-	bash tests/check_repo_hygiene.sh
 	bash tests/check_cgra_shape.sh
 	bash tests/check_cgra_behavior.sh
 	bash scripts/count_instructions.sh

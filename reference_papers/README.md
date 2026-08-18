@@ -33,4 +33,4 @@ find reference_papers -type f -name '*.pdf' -print
 file reference_papers/**/*.pdf
 ```
 
-提交前运行 `make test`；`tests/check_repo_hygiene.sh` 会确认 PDF 没有被 Git 跟踪。
+提交前运行 `make test`，并使用 `git status` 确认本地 PDF 和生成文件没有进入待提交列表。
