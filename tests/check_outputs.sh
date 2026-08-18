@@ -10,6 +10,8 @@ kernels=(
   haystack_hybrid_merge
   haystack_context_pack
   haystack_lexrank
+  agent_workflow_schedule
+  robot_motion_collision
 )
 
 require_file() {
@@ -53,6 +55,7 @@ for kernel in "${kernels[@]}"; do
 
   require_pattern 'Reference archive:' "$src"
   require_pattern 'Benchmark-only extensions:' "$src"
+  require_pattern 'Simplifications:' "$src"
   require_pattern 'Not implemented:' "$src"
   require_pattern 'CPU 瓶颈分析' "$ref_dir/analysis_zh.md"
   require_pattern '面向过程实现形态' "$ref_dir/analysis_zh.md"
@@ -98,5 +101,19 @@ require_value_gt_zero ITERATIONS "$ROOT_DIR/build/haystack_lexrank.out"
 require_pattern '^DANGLING_POLICY=redistribute_q8$' "$ROOT_DIR/build/haystack_lexrank.out"
 require_pattern 'out_degree.*== 0|out_degree.*= 0' "$ROOT_DIR/src/haystack_lexrank.c"
 require_pattern 'rank_old_q8' "$ROOT_DIR/src/haystack_lexrank.c"
+
+require_pattern '^SCHEDULE_ORDER=0,2,1,3,4,5$' "$ROOT_DIR/build/agent_workflow_schedule.out"
+require_pattern '^RESOURCE=1,1,0,1,0,1$' "$ROOT_DIR/build/agent_workflow_schedule.out"
+require_pattern '^FINISH=3,7,6,10,12,15$' "$ROOT_DIR/build/agent_workflow_schedule.out"
+require_pattern '^GPU_INELIGIBLE_EVALUATIONS=2$' "$ROOT_DIR/build/agent_workflow_schedule.out"
+require_pattern '^RELEASED_EDGES=7$' "$ROOT_DIR/build/agent_workflow_schedule.out"
+require_pattern '^DEADLOCK=0$' "$ROOT_DIR/build/agent_workflow_schedule.out"
+require_pattern '^VALID=0,1,1,0,1,1$' "$ROOT_DIR/build/robot_motion_collision.out"
+require_pattern '^COLLISION=1,0,0,1,0,0$' "$ROOT_DIR/build/robot_motion_collision.out"
+require_pattern '^SAMPLES=1,5,5,4,5,5$' "$ROOT_DIR/build/robot_motion_collision.out"
+require_pattern '^INVALID_EDGES=2$' "$ROOT_DIR/build/robot_motion_collision.out"
+require_pattern '^OUT_OF_BOUNDS=1$' "$ROOT_DIR/build/robot_motion_collision.out"
+require_pattern '^OBSTACLE_HITS=1$' "$ROOT_DIR/build/robot_motion_collision.out"
+require_pattern '^EARLY_EXIT_EDGES=2$' "$ROOT_DIR/build/robot_motion_collision.out"
 
 echo "check_outputs: ok"

@@ -7,8 +7,9 @@ vendor 目录，也不是上游框架文档的镜像；它保存的是每个 ben
 这些 reference 服务于 CGRA/CPU co-benchmarking。当前 C 程序不会构建真实 RAG
 知识库，不运行完整 Haystack pipeline、document store、tokenizer、embedding model、
 PromptBuilder 或 LLM prompt runtime。加速器在这里被视为 CPU 的协助单元，因此每个
-reference 都只抽取一个 compact、deterministic 的 workload，用来近似更大检索或
-上下文准备系统中的控制流、分支行为、跳转模式、访存和评分循环。
+reference 必须先说明所选 CPU 环节在上游流程中的作用和性能意义，再说明完整系统为何
+不能直接放入当前加速器。固定数据、整数运算和单函数形式只用于形成可重复对照，不能
+反过来作为 workload 重要性的依据。
 
 ## 每个 kernel 目录包含什么
 
@@ -17,7 +18,7 @@ reference 都只抽取一个 compact、deterministic 的 workload，用来近似
 - `source_excerpt.md`: upstream repo、源码文件或官方文档 URL、目标函数/类方法、
   reduced pseudocode、benchmark-only extensions、C function mapping contract、
   behavior matching constraints。
-- `analysis.md`: 英文分析，说明为什么抽取该片段、C 实现目标、保留与省略内容、
+- `analysis.md`: 英文分析，说明 workload 重要性、简化原因、C 实现目标、保留与省略内容、
   CPU bottleneck、过程式函数形态和行为检查。
 - `analysis_zh.md`: 中文分析，面向项目使用者和 code agent，必须保留与英文分析一致
   的瓶颈判断、实现边界和行为匹配约束。
@@ -40,13 +41,14 @@ benchmark 对应哪些 reference、哪些语义来自上游、哪些行为是 be
 - upstream projects 定义算法形态和真实 CPU-side workload 来源；
 - benchmark documents 定义 deterministic synthetic data、fixed-point arithmetic、
   truncation policy、early abandon、token budget 等近似行为；
-- C code 必须匹配这里定义的小核行为，不匹配完整上游应用行为；
+- C code 必须匹配这里定义的 benchmark 行为，不匹配完整上游应用行为；
 - 如果某个近似行为是为了 CGRA 测试加入的，它必须出现在 reference、C 文件头、
   counter 或输出字段中。
 - host reference 可以使用 helper 函数链解释完整流程；CGRA 版本必须把对应 helper
   行为内联为单函数阶段块。
-- 如果 CGRA 指令预算要求摘取算法片段，reference analysis 必须写明 `CGRA slice
-  boundary`，不能让使用者误以为 CGRA 文件实现了完整 host pipeline。
+- 如果 CGRA 指令预算要求缩小规模或拆分算法阶段，reference analysis 必须写明该阶段
+  的系统作用、简化原因、保留行为和 `CGRA slice boundary`，不能让使用者误以为 CGRA
+  文件实现了完整 host pipeline。
 
 推荐的 C 形态是简单过程式调用链：
 
@@ -66,3 +68,16 @@ CGRA 单函数版本额外遵循 `../cgra_kernels/README.md` 和
 `../ref/kernel_reference_mapping.md`：单文件单函数、150 条反汇编指令 practical target、
 无 helper call、无 `main`、无 print、无 `continue`/`break`、输出 buffer 回写，并通过
 反汇编审查指令数和 call-like 指令。
+
+## Scheduling 与 Robotics 扩展
+
+本仓库还包含：
+
+- [`SCHEDULING_ROBOTICS_BACKGROUND_ZH.md`](../SCHEDULING_ROBOTICS_BACKGROUND_ZH.md)
+- [`SCHEDULING_ROBOTICS_CODE_SUMMARY_ZH.md`](../SCHEDULING_ROBOTICS_CODE_SUMMARY_ZH.md)
+- [`reference_papers/`](../reference_papers/)
+
+前两份文档分别说明 scheduler / robotics 的选择理由和当前实现状态。新增的
+`agent_workflow_schedule` 与 `robot_motion_collision` 分别对应
+Agent 异构工作流调度和机器人 edge collision checking；动态 MRTA 仅作为后续调研方向，
+不在当前 C benchmark 的实现范围内。

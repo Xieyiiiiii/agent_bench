@@ -2,3 +2,4 @@ build/
 *.o
 *.out
 *.log
+reference_papers/**/*.pdf

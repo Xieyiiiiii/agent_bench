@@ -10,6 +10,8 @@ kernels=(
   haystack_hybrid_merge
   haystack_context_pack
   haystack_lexrank
+  agent_workflow_schedule
+  robot_motion_collision
 )
 
 for kernel in "${kernels[@]}"; do

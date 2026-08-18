@@ -11,20 +11,21 @@ rank_bm25、Pyserini、NetworkX、sumy 或 LexRank，而是从这些项目中抽
 真实 RAG 需要知识库构建、文档解析、索引维护、框架调度、LLM 调用和大量动态
 对象管理，这些都不适合作为当前 CGRA 芯片上的完整 C 程序。当前阶段先选择
 开源项目中可追溯的小场景，抽取其中 CPU 侧有代表性的循环、分支、跳转、访存
-和评分路径，形成可灌入芯片或在 CPU 侧对照的小核 benchmark。后续如果进入更
-完整的 CPU 协同测试，可以在这些小核基础上扩展输入组织方式和测例规模。
+和评分路径，形成可灌入芯片或在 CPU 侧对照的独立 benchmark。后续如果进入更
+完整的 CPU 协同测试，可以在这些 benchmark 基础上扩展输入组织方式和测例规模。
 
 当前仓库已经包含 reference 文档、C 源码、公共头文件、Makefile 和测试脚本。
 后续维护必须继续遵循 reference-first：先更新 `reference/` 和
 `ref/kernel_reference_mapping.md`，再修改 C 行为和测试。
 
-## 为什么选择这 6 个 benchmark
+## 为什么选择这 8 个 benchmark
 
 agent 应用中的 CPU 工作通常不只发生在模型推理阶段。即便 LLM 推理在 GPU 或远端
 API 上执行，本地 agent 仍然需要完成检索、过滤、排序、融合、上下文整理和压缩。
 这些步骤决定端到端延迟、可扩展性、上下文质量和系统稳定性。
 
-这 6 个 benchmark 覆盖 agent/RAG CPU pipeline 的关键阶段：
+前 6 个 benchmark 覆盖 agent/RAG CPU pipeline 的关键阶段，新增 2 个覆盖 Agent 调度
+和 embodied robotics 的 CPU 过程：
 
 | Benchmark | Pipeline 位置 | CPU 工作负载 |
 |---|---|---|
@@ -34,17 +35,20 @@ API 上执行，本地 agent 仍然需要完成检索、过滤、排序、融合
 | `haystack_hybrid_merge` | hybrid retrieval fusion | candidate merge, duplicate detection, weighted score fusion |
 | `haystack_context_pack` | prompt context preparation | score sort, source/chunk dedup, token budget packing |
 | `haystack_lexrank` | context compression | sentence similarity graph, PageRank-style ranking, redundancy filtering |
+| `agent_workflow_schedule` | Agent orchestration control plane | DAG readiness, CPU/GPU placement, GPU-memory eligibility, completion release |
+| `robot_motion_collision` | embodied action realization | fixed-sample edge validity, obstacle branches, collision early exit |
 
-这些对象共同覆盖了 agent 常见 CPU bottlenecks：连续向量扫描、不规则 posting-list
-访问、branch-heavy filtering、小集合合并、排序/去重、矩阵式相似度计算和迭代式
-图排名。
+这些对象覆盖连续向量扫描、不规则 posting-list 访问、branch-heavy filtering、小集合
+合并、排序/去重、矩阵式相似度计算、迭代式图排名、任务依赖推进和运动有效性判断。
+其中 collision checking 有直接 CPU 时间占比证据；Agent scheduler 是重要 CPU 控制环节，
+但其自身是否构成主要 CPU hotspot 仍需在完整系统中 profiling。
 
 ## 这些对象在现代 agent 应用中的地位
 
 下列对象描述的是 agent/RAG pipeline 中真实存在的 CPU-side 工作类型，但 benchmark
-不声称运行真实 pipeline。每个 C kernel 都只保留一个可验证的小核：例如向量全扫描、
+不声称运行真实 pipeline。每个 C kernel 都只保留一个可验证的计算过程：例如向量全扫描、
 metadata predicate、posting-list traversal、候选融合、context packing 或
-LexRank-style 图排名。对于 CGRA 评估来说，重要的是这些小核能稳定制造目标控制流
+LexRank-style 图排名。对于 CGRA 评估来说，重要的是这些过程能稳定产生目标控制流
 和数据访问模式，而不是复现完整应用系统。
 
 ### 1. Dense retrieval full scan
@@ -148,10 +152,15 @@ FAISS index class 或 NetworkX graph object。每个 kernel 默认只保留少�
 当前仓库包含完整 v0 实现：
 
 - `include/`: 公共配置、Q8 fixed-point、Top-K、checksum helper；
-- `src/`: 6 个独立 C99 benchmark；
+- `src/`: 8 个独立 C99 benchmark；
 - `tests/run_all.sh`: 运行所有 benchmark 并生成 `build/*.out`；
 - `tests/check_outputs.sh`: 检查 reference、C 文件头、关键 counter 和行为约束；
 - `Makefile`: `make all`、`make test`、`make clean`。
+
+Scheduling 与 robotics 的筛选依据见 `SCHEDULING_ROBOTICS_BACKGROUND_ZH.md`，
+当前实现总结见 `SCHEDULING_ROBOTICS_CODE_SUMMARY_ZH.md`。动态 MRTA 保留为后续扩展项；当前
+实现优先覆盖 Agent heterogeneous workflow scheduling 和 motion collision checking，
+因为前者最直接对应异构依赖调度定义，后者具有最强的碰撞检测 CPU 热点证据。
 
 `build/` 是运行生成目录，不应提交或手工维护。完成验证后可用 `make clean` 删除。
 
@@ -165,15 +174,17 @@ FAISS index class 或 NetworkX graph object。每个 kernel 默认只保留少�
 single-function kernel slice。
 
 这并不改变 reference 行为的来源。`src/` 继续作为 host reference benchmark，用清晰
-helper 函数链解释完整算法流程并支持回归测试；`cgra_kernels/` 则把同一 reference 中
-最关键的控制流和算术路径扁平化为单函数。若完整算法超出指令预算，允许摘取核心
-workload 或拆成多个单函数文件，但必须在 `ref/kernel_reference_mapping.md` 和
-`reference/*/analysis*.md` 中写清 slice boundary。
+helper 函数链解释算法流程并支持回归测试；`cgra_kernels/` 则把同一 reference 中
+最重要且可独立验证的阶段展开为单函数。若该阶段仍超出指令预算，可以缩小固定输入规模
+或拆成多个单函数文件，但必须在 `ref/kernel_reference_mapping.md` 和
+`reference/*/analysis*.md` 中说明该阶段为何重要、为何简化、保留哪些状态转移，以及
+结果不能代表完整系统的哪些部分。
 
-CGRA 版本仍然需要保留复杂分支/跳转特征。`haystack_enns_filtered`、`haystack_bm25`、
-`haystack_hybrid_merge`、`haystack_context_pack` 和 `haystack_lexrank` 的 CGRA slice
-应分别保留 filter/early abandon、posting traversal、duplicate merge、budget packing
-和 dangling rank iteration 等 control-flow-heavy 路径。
+CGRA 版本仍然需要保留复杂分支/跳转特征。已有 RAG kernels 分别保留
+filter/early abandon、posting traversal、duplicate merge、budget packing 和 dangling
+rank iteration；新增 `agent_schedule_core.c` 保留 ready scan、GPU eligibility、资源
+选择和 successor release，`robot_collision_core.c` 保留 sample、obstacle、invalid
+early-exit 和 valid/invalid 分支。两者均不是完整 Agent runtime 或机器人规划器。
 
 ## 推荐维护顺序
 

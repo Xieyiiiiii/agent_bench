@@ -1,15 +1,16 @@
 # haystack_enns_flat 中文分析
 
-## 为什么抽取这段参考行为
+## Workload 重要性与简化依据
 
-这个 kernel 对应 dense retrieval 的最小 CPU 工作负载：一个 query embedding
+该 benchmark 对应 dense retrieval 的基础 CPU 计算过程：一个 query embedding
 和所有 document embeddings 做逐个比较，并维护一个很小的 Top-K 结果集。
 Haystack 提供 in-memory embedding retrieval 的调用语义，FAISS flat L2 search
 提供 exhaustive scan + L2 distance + labels/distances 的核心检索语义。
 
-在 CGRA benchmark 场景中，这不是完整 RAG 检索栈，而是可灌入芯片的小核。
-它保留连续向量扫描和 Top-K 更新分支，用来评估加速器作为 CPU 协助单元时对
-这类热点循环的处理能力。
+完整 RAG 检索还需要知识库、embedding model、动态对象和框架调度，这些依赖 host
+运行时，不能直接放入当前 CGRA。单函数版本保留连续向量扫描、L2 累加、Top-K 更新和
+tie-break，因为这些步骤定义了 flat retrieval 的核心计算结果，并可与 CPU reference
+逐项比较。
 
 ## C 实现目标
 

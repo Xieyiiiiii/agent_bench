@@ -1,6 +1,6 @@
 # haystack_context_pack 中文分析
 
-## 为什么抽取这段参考行为
+## Workload 重要性与简化依据
 
 RAG 系统通常会在 prompt rendering 前整理 retrieved documents。CPU 工作包括排序、
 去重和 token budget packing。Haystack `PromptBuilder` 是 documents 被消费进入 prompt

@@ -41,9 +41,12 @@ uses deterministic insertion-based top-k instead of FAISS heap code.
 - Deterministic synthetic int16 vectors replace real embeddings and document
   objects.
 - Deterministic insertion Top-K replaces FAISS heap utilities.
-- The workload is a CGRA-friendly small kernel that approximates dense
-  retrieval's CPU-side vector scan; it does not build or query a real RAG
-  knowledge base.
+- Dense flat retrieval is retained because exhaustive vector scan defines a
+  measurable CPU baseline behind the cited retrieval implementations.
+- Knowledge-base construction, embedding generation, dynamic objects, and
+  framework dispatch are omitted because they require host libraries and
+  runtime services outside the current accelerator interface. The benchmark
+  keeps vector scanning, L2 accumulation, Top-K update, and tie-breaking.
 
 ## C function mapping contract
 

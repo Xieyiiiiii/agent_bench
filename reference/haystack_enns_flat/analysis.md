@@ -7,9 +7,12 @@ compared against every document embedding, and a small top-k result set is kept.
 That path is the simplest common denominator behind Haystack in-memory
 embedding retrieval and FAISS flat L2 search.
 
-For the CGRA benchmark, this is intentionally a small kernel rather than a real
-RAG retrieval stack. It preserves the tight vector-scan loop and top-k branch so
-the accelerator can be evaluated as a CPU-side helper.
+Dense flat retrieval matters here because exhaustive vector scan is the
+well-defined CPU baseline behind the cited retrieval implementations. The full
+RAG stack is not placed on the accelerator because knowledge-base construction,
+embedding generation, dynamic framework objects, and I/O require host runtime
+services. The benchmark retains the vector scan and Top-K decision process so
+CPU and CGRA results can be compared under the same deterministic contract.
 
 ## C implementation target
 

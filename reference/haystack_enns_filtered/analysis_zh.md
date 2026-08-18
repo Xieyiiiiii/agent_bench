@@ -1,6 +1,6 @@
 # haystack_enns_filtered 中文分析
 
-## 为什么抽取这段参考行为
+## Workload 重要性与简化依据
 
 filtered dense retrieval 同时包含两个常见 CPU 模式：metadata predicate 分支和
 dense vector scoring。Haystack 提供 filter-before-retrieval 的行为边界，FAISS
@@ -9,7 +9,7 @@ branch-heavy dense retrieval workload。
 
 在 CGRA benchmark 场景中，这个 kernel 近似 filtered retrieval 中复杂分支、
 cutoff 判断、部分向量累加和 Top-K 更新的 CPU 热路径。它不执行真实 Haystack
-filter language 或 document store，只保留适合芯片小核测试的控制流和算术模式。
+filter language 或 document store，只保留适合芯片 benchmark 的控制流和算术模式。
 
 ## C 实现目标
 

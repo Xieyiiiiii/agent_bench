@@ -1,6 +1,6 @@
 # haystack_lexrank 中文分析
 
-## 为什么抽取这段参考行为
+## Workload 重要性与简化依据
 
 LexRank-style summarization 通过构造 sentence similarity graph、对句子节点做中心性排名、
 再选择高分且不冗余的句子来压缩 retrieved snippets。这是一个明确的 CPU-side context

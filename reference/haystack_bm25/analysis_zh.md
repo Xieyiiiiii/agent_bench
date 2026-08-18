@@ -1,6 +1,6 @@
 # haystack_bm25 中文分析
 
-## 为什么抽取这段参考行为
+## Workload 重要性与简化依据
 
 sparse retrieval 的 CPU 热路径是 posting-list traversal 和 per-posting score
 accumulation。Haystack 提供 query/filter/top_k 的 retriever flow，`rank_bm25`
@@ -10,7 +10,7 @@ corpus preprocessing 或 Python object model。
 
 在 CGRA benchmark 场景中，这个 kernel 只保留 deterministic posting traversal
 和 fixed-point scoring。知识库构建、分词、语料统计和运行时 IDF 计算仍属于
-CPU/应用侧预处理，不放入当前可灌入芯片的小核。
+CPU/应用侧预处理，不放入当前可灌入芯片的单函数 kernel。
 
 ## C 实现目标
 

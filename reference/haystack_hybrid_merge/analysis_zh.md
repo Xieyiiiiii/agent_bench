@@ -1,6 +1,6 @@
 # haystack_hybrid_merge 中文分析
 
-## 为什么抽取这段参考行为
+## Workload 重要性与简化依据
 
 hybrid RAG retrieval 常见流程是把 dense retriever 和 sparse retriever 的候选结果
 合并。这里的 CPU 工作负载不是模型推理，而是小候选集合上的 duplicate detection、

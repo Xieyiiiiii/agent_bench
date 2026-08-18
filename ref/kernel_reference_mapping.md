@@ -1,18 +1,18 @@
 # Kernel Reference Mapping
 
 本文件是 `reference/<kernel>/` 与未来 `src/*.c` 文件头之间的中文审计索引。
-它不描述完整上游项目移植，而是说明每个 C benchmark 从哪些开源项目抽取小核
+它不描述完整上游项目移植，而是说明每个 C benchmark 从哪些开源项目选取计算过程
 语义、哪些行为由 benchmark 自己定义、以及 code agent 写 C 时必须遵守的函数
 和数据边界。
 
 硬件场景：当前 CGRA 芯片不运行完整 RAG 系统，也不构建真实知识库。加速器是
 CPU 的协助单元，本阶段先选取开源项目中可追溯的小场景，把 CPU 侧常见的循环、
 复杂分支、跳转、访存和评分路径重写成确定性 C benchmark。后续 CPU 协同测试
-可以在这些小核基础上扩展更完整的测例。
+可以在这些独立 benchmark 基础上扩展更完整的测例。
 
 通用约束：
 
-- C 文件必须匹配本文件和 `reference/<kernel>/source_excerpt.md` 中定义的小核行为。
+- C 文件必须匹配本文件和 `reference/<kernel>/source_excerpt.md` 中定义的行为。
 - 不得声称逐行移植 Haystack、FAISS、rank_bm25、Pyserini、NetworkX、sumy 或 LexRank。
 - 数据结构只服务于过程式算法阶段，不模拟 `Retriever`、`DocumentStore`、`Pipeline`
   或图 API 对象。
@@ -681,3 +681,132 @@ Split policy:
 Branch/jump coverage:
 - control-flow-heavy。`lexrank_rank_core.c` 必须覆盖 dangling node detection、
   incoming edge scan 和 fixed rank iteration。
+
+## agent_workflow_schedule.c
+
+Kernel: `agent_workflow_schedule.c`
+
+参考归档：
+- `reference/agent_workflow_schedule/source_excerpt.md`
+- `reference/agent_workflow_schedule/analysis.md`
+- `reference/agent_workflow_schedule/analysis_zh.md`
+- `SCHEDULING_ROBOTICS_BACKGROUND_ZH.md`
+- `SCHEDULING_ROBOTICS_CODE_SUMMARY_ZH.md`
+
+参考来源明细：
+- Agentic CPU-GPU Scheduling：tool DAG、CPU/GPU placement、VRAM eligibility 和
+  completion 后的 readiness 更新。
+  URL: `https://arxiv.org/abs/2607.22242`
+- MARS：LLM/tool loop 和 CPU/GPU co-scheduling 的系统背景。
+  URL: `https://arxiv.org/abs/2604.26963`
+
+来源边界：
+- 论文提供异构 Agent workflow 调度问题定义和系统位置。
+- Benchmark 定义固定 6 节点 DAG、整数 CPU/GPU cost、GPU capacity、最早完成选择和
+  task-id tie-break。
+- 本 benchmark 不实现线程、锁、真实 GPU runtime、LLM、KV cache 或多 workflow 并发。
+
+C 行为：
+- 初始化依赖矩阵、predecessor count 和资源 profile。
+- 每轮评估 ready task；开始时刻取资源可用时刻和前驱最晚完成时刻的最大值。
+- 比较 CPU/GPU finish；GPU memory 超限时 GPU 候选无效。
+- 记录最早完成的 task，更新资源时钟，减少后继 predecessor count，并向后继传播
+  当前任务的 finish。
+- 直到全部调度或检测到无进展；输出 schedule order、resource 和 finish。
+
+允许的主要数据结构：
+- `ScheduleInput`
+- `ScheduleState`
+- `ScheduleCounters`
+
+C 函数契约：
+- 初始化固定 DAG/profile -> `init_data`
+- 初始化状态/counters -> `reset_schedule`
+- 评估候选、选择 task/resource -> `evaluate_candidate`, `choose_next_task`
+- 更新资源状态 -> `record_schedule`
+- 释放后继 -> `release_successors`
+- 主流程编排 -> `run_schedule`
+- 输出校验 -> `checksum_result`, `print_result`
+
+行为匹配要求：
+- host 与 `cgra_kernels/agent_schedule_core.c` 在相同输入上必须产生相同的 schedule order、
+  每个 task 的 resource choice 和 finish time；CGRA 输出数组不包含打印/checksum 字段。
+- `GPU_INELIGIBLE_EVALUATIONS` 表示 ready candidate 评估中的显存资格失败次数，不是
+  被拒绝任务数，也不得混入 GPU queue wait。
+- `DEADLOCK` 只表示无 ready task 的无进展防护，正常固定 DAG 必须为 0。
+
+CGRA kernel form:
+- `cgra_kernels/agent_schedule_core.c` 单文件单函数，依赖矩阵和 profile 使用 flat arrays。
+  这是当前项目的 slice 接口约定和检查脚本要求；`6 x 6` dependency matrix 来自固定
+  `TASK_COUNT=6` 的 benchmark 输入，不是 CGRA 架构要求。
+- 输出布局：`out[0..5]` 为 task resource，`out[6..11]` 为 finish，`out[12..17]` 为
+  schedule order，`out[18]` done，`out[19]` gpu_ineligible_evaluations，
+  `out[20]` released_edges，
+  `out[21]` deadlock。
+- 不包含 `main`、I/O、helper call、动态分配、`continue` 或 `break`。
+
+Instruction budget and branch coverage:
+- 当前实测为 133 条反汇编指令、0 个 call-like instruction，低于 150 practical target。
+- 必须保留 ready scan、前驱完成时刻约束、GPU allowed/rejected、CPU/GPU finish 比较、
+  tie-break、successor release 和 deadlock guard；若目标编译器指令数上升，优先缩小
+  DAG，不删除 eligibility、dependency timing 或 dependency release。
+
+## robot_motion_collision.c
+
+Kernel: `robot_motion_collision.c`
+
+参考归档：
+- `reference/robot_motion_collision/source_excerpt.md`
+- `reference/robot_motion_collision/analysis.md`
+- `reference/robot_motion_collision/analysis_zh.md`
+- `SCHEDULING_ROBOTICS_BACKGROUND_ZH.md`
+- `SCHEDULING_ROBOTICS_CODE_SUMMARY_ZH.md`
+
+参考来源明细：
+- Energy-Efficient Realtime Motion Planning：collision detection 热点、空间局部性和
+  cascaded early exit。
+  URL: `https://doi.org/10.1145/3579371.3589092`
+- VAMP：CPU SIMD sampling-based planning、FK 和 collision checking。
+  URL: `https://arxiv.org/abs/2309.14545`
+
+来源边界：
+- 论文定义 motion planning/collision checking 的 robotics pipeline 位置和热点背景。
+- Benchmark 定义二维、固定采样数、矩形 obstacle 和整数线性插值。
+- 不声称实现 FK、BVH/GJK、RRT/PRM、nearest-neighbor、ROS/Nav2 或 controller。
+
+C 行为：
+- 对 6 条 edge 各采样 5 个点。
+- 先做边界检查，再扫描 3 个矩形 obstacle。
+- 首次 invalid 后关闭 active flag，固定外层循环继续但不再更新该 edge 的采样。
+- 输出 valid/collision/samples_checked 以及 out-of-bounds、obstacle-hit、early-exit counters。
+
+允许的主要数据结构：
+- `CollisionInput`
+- `CollisionResult`
+- `CollisionCounters`
+
+C 函数契约：
+- 初始化 edge/obstacle -> `init_data`
+- 初始化结果/counters -> `reset_result`
+- obstacle predicate -> `point_in_obstacle`
+- 单 edge 检查 -> `check_edge`
+- 主流程编排 -> `run_kernel`
+- 输出校验 -> `checksum_result`, `print_result`
+
+行为匹配要求：
+- host 与 `cgra_kernels/robot_collision_core.c` 在相同输入上必须产生相同的每条 edge
+  valid、collision 和 samples_checked。
+- 采样使用整数线性插值；不得引入 sqrt、trig 或外部库依赖。
+- `early_exit_edges` 只统计实际少于固定采样数的 invalid edge。
+
+CGRA kernel form:
+- `cgra_kernels/robot_collision_core.c` 单函数、flat arrays、caller-provided output。
+- 输出布局：`out[0..5]` valid，`out[6..11]` collision，`out[12..17]` samples_checked，
+  `out[18..22]` 为 valid_edges、invalid_edges、out_of_bounds、obstacle_hits、
+  early_exit_edges。
+- 不包含 `main`、I/O、helper call、动态分配、`continue` 或 `break`。
+
+Instruction budget and branch coverage:
+- 当前实测为 98 条反汇编指令、0 个 call-like instruction，低于 150 practical target。
+- 必须保留 sample loop、boundary reject、obstacle hit、active flag 和 valid/invalid 汇总；
+  若目标编译器指令数上升，优先减少 obstacle/sample 常量，不删除 collision branch。
